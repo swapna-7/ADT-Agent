@@ -1,2 +1,4 @@
 psutil>=5.9.8,<6
 requests>=2.32.3,<3
+packaging>=24,<26
+pyinstaller>=6,<7

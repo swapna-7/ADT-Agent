@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+build/
+dist/
+*.spec
+.env
+windows/.env
+linux/.env
+mac/.env
+.env-backup/
+api_config.py
+common/api_config.py

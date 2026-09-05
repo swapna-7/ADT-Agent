@@ -1,0 +1,178 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  version-check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: check
+        name: VERSION must match version.py and the git tag
+        run: |
+          python3 << 'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          file_ver = Path("VERSION").read_text(encoding="utf-8").strip()
+          text = Path("common/version.py").read_text(encoding="utf-8")
+          match = re.search(r'AGENT_VERSION\s*=\s*"([^"]+)"', text)
+          if not match:
+              sys.exit("AGENT_VERSION missing from version.py")
+          py_ver = match.group(1)
+          if file_ver != py_ver:
+              sys.exit(f"VERSION ({file_ver}) != version.py ({py_ver})")
+          ref = os.environ.get("GITHUB_REF", "")
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          if tag.startswith("v"):
+              tag = tag[1:]
+          if ref.startswith("refs/tags/") and tag != file_ver:
+              sys.exit(f"tag v{tag} != VERSION {file_ver}")
+          print(file_ver)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"version={file_ver}\n")
+          PY
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r common/requirements.txt pytest
+      - name: pytest
+        run: python -m pytest tests/ -q
+
+  build:
+    needs: [version-check, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: adt-agent-windows.exe
+          - os: ubuntu-latest
+            artifact: adt-agent-linux
+          - os: macos-latest
+            artifact: adt-agent-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fail if platform .env files exist
+        shell: bash
+        run: |
+          for path in windows/.env linux/.env mac/.env .env; do
+            if [ -f "$path" ]; then
+              echo "Refusing to build: $path must not be present in release builds"
+              exit 1
+            fi
+          done
+      - name: Generate api_config.py
+        env:
+          VIZHI_API_BASE: ${{ secrets.VIZHI_API_BASE }}
+        shell: bash
+        run: |
+          if [ -z "$VIZHI_API_BASE" ]; then
+            echo "VIZHI_API_BASE secret is required for release builds"
+            exit 1
+          fi
+          python generate_api_config.py "$VIZHI_API_BASE"
+      - name: Build Windows
+        if: runner.os == 'Windows'
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\build.ps1
+      - name: Build Linux
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x linux/build.sh
+          ./linux/build.sh
+      - name: Build macOS
+        if: runner.os == 'macOS'
+        run: |
+          chmod +x mac/build.sh
+          ./mac/build.sh
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist-release
+          case "${RUNNER_OS}" in
+            Windows) cp windows/dist/adt-agent.exe "dist-release/${{ matrix.artifact }}" ;;
+            Linux)   cp linux/dist/adt-agent "dist-release/${{ matrix.artifact }}" ;;
+            macOS)   cp mac/dist/adt-agent "dist-release/${{ matrix.artifact }}" ;;
+            *) echo "Unknown runner OS ${RUNNER_OS}"; exit 1 ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist-release/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  publish:
+    needs: [version-check, build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Write latest.json
+        run: |
+          python3 << 'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path("release-assets")
+          mapping = {
+              "windows": "adt-agent-windows.exe",
+              "linux": "adt-agent-linux",
+              "macos": "adt-agent-macos",
+          }
+          assets = {}
+          for platform, name in mapping.items():
+              path = root / name
+              if not path.is_file():
+                  raise SystemExit(f"missing release asset {path}")
+              assets[platform] = {
+                  "name": name,
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+              }
+          version = Path("VERSION").read_text(encoding="utf-8").strip()
+          payload = {"version": version, "assets": assets}
+          Path("latest.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2))
+          PY
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/adt-agent-windows.exe
+            release-assets/adt-agent-linux
+            release-assets/adt-agent-macos
+            latest.json
+          generate_release_notes: true
+          fail_on_unmatched_files: true
