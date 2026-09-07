@@ -21,6 +21,21 @@ def load_config(path: Path) -> dict[str, Any]:
     return {}
 
 
+def load_local_config(path: Path) -> dict[str, Any]:
+    """Load config with scalar values as strings; preserve nested dicts/lists (e.g. last_runs)."""
+    data = load_config(path)
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        k = str(key)
+        if isinstance(value, (dict, list)):
+            out[k] = value
+        elif value is None:
+            out[k] = ""
+        else:
+            out[k] = str(value)
+    return out
+
+
 def write_config(config: dict[str, Any], config_path: Path) -> None:
     """Write config atomically: tmp file then os.replace()."""
     config_path.parent.mkdir(parents=True, exist_ok=True)

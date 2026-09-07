@@ -34,7 +34,7 @@ if str(_COMMON) not in sys.path:
     sys.path.insert(0, str(_COMMON))
 from api_base import resolve_api_base
 from command_poller import start_command_poller
-from config_io import load_config, write_config
+from config_io import load_config, load_local_config, write_config
 from device_session import DeviceSession
 from enrollment import platform_tag, system_hostname, system_username
 from first_run import needs_enrollment, prompt_and_enroll
@@ -249,11 +249,6 @@ def load_env(path: Path) -> dict[str, str]:
         k, v = line.split("=", 1)
         values[k.strip()] = v.strip()
     return values
-
-
-def load_local_config(path: Path) -> dict[str, str]:
-    data = load_config(path)
-    return {str(k): str(v) for k, v in data.items()}
 
 
 def save_local_config(path: Path, config: dict[str, str]) -> None:

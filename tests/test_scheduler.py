@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from config_io import load_config
+from config_io import load_config, load_local_config
 from scheduler import load_last_runs, mark_run, should_run
 
 
@@ -26,3 +26,16 @@ def test_last_runs_persisted(tmp_path: Path):
 
     disk = load_config(config_path)
     assert disk["last_runs"]["inventory"] == now
+
+
+def test_last_runs_survive_load_local_config_roundtrip(tmp_path: Path):
+    config_path = tmp_path / "config.json"
+    interval = 3600
+    now = time.time()
+
+    config = mark_run(config_path, {"DEVICE_TOKEN": "vzd_x"}, "inventory", now)
+    reloaded = load_local_config(config_path)
+    last_runs = load_last_runs(reloaded)
+
+    assert should_run("inventory", last_runs, interval, now + 100) is False
+    assert reloaded["DEVICE_TOKEN"] == "vzd_x"
