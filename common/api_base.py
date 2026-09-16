@@ -18,6 +18,7 @@ def resolve_api_base(
 ) -> str:
     cfg = local_config or {}
     env_map = env or {}
+    base = "http://localhost:3000"
     for candidate in (
         override,
         cfg.get("API_BASE"),
@@ -27,5 +28,8 @@ def resolve_api_base(
         "http://localhost:3000",
     ):
         if candidate and str(candidate).strip():
-            return str(candidate).strip().rstrip("/")
-    return "http://localhost:3000"
+            base = str(candidate).strip().rstrip("/")
+            break
+    if not base.startswith("https://") and "localhost" not in base:
+        raise RuntimeError(f"API_BASE must use HTTPS in production: {base}")
+    return base

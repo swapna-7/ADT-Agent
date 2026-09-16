@@ -1,2 +1,2 @@
 -r ../common/requirements.txt
-pywin32>=306
+pywin32==306

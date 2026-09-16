@@ -11,11 +11,13 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from command_poller import start_command_poller
+from job_signing import sign_patch_job
 from report import fetch_patch_jobs, report_job_status
 from updates import apply_update, scan_updates
 
 if TYPE_CHECKING:
     from device_session import DeviceSession
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -38,11 +40,138 @@ def _version_for(
     return None
 
 
+def report_job_failed(
+    api_base: str,
+    token: str,
+    job_id: str,
+    *,
+    error_code: str,
+    error_message: str,
+    session: "DeviceSession | None" = None,
+) -> None:
+    """POST status=failed; never raises — log if the report itself fails."""
+    try:
+        report_job_status(
+            api_base,
+            token,
+            job_id,
+            status="failed",
+            exit_code=1,
+            error_code=error_code,
+            error_message=error_message,
+            session=session,
+        )
+    except Exception as exc:
+        log.exception(
+            "Could not report patch job %s as failed (%s): %s",
+            job_id[:8],
+            error_code,
+            exc,
+        )
+
+
+def _verify_job_signature_fatal(
+    api_base: str,
+    token: str,
+    job_id: str,
+    *,
+    signing_key: str | None,
+    signature: str | None,
+    endpoint_id: str,
+    source: str,
+    update_uid: str,
+    package_name: str | None,
+    target_version: str | None,
+    session: "DeviceSession | None",
+) -> bool:
+    """Return True only when HMAC is valid; otherwise report failed and return False."""
+    if not signing_key:
+        log.error("Patch job %s rejected: no_signing_key", job_id[:8])
+        report_job_failed(
+            api_base,
+            token,
+            job_id,
+            error_code="no_signing_key",
+            error_message=(
+                "JOB_SIGNING_KEY missing from config.json — job rejected"
+            ),
+            session=session,
+        )
+        return False
+
+    if not signature:
+        log.error("Patch job %s rejected: no_signature", job_id[:8])
+        report_job_failed(
+            api_base,
+            token,
+            job_id,
+            error_code="no_signature",
+            error_message="job_signature absent — job rejected",
+            session=session,
+        )
+        return False
+
+    try:
+        expected = sign_patch_job(
+            signing_key,
+            job_id=job_id,
+            endpoint_id=endpoint_id,
+            source=source,
+            update_uid=update_uid,
+            package_name=package_name,
+            target_version=target_version,
+        )
+    except Exception as exc:
+        log.error("Patch job %s rejected: hmac_compute_error", job_id[:8])
+        report_job_failed(
+            api_base,
+            token,
+            job_id,
+            error_code="hmac_compute_error",
+            error_message=f"HMAC computation failed: {exc}",
+            session=session,
+        )
+        return False
+
+    import hmac
+
+    try:
+        valid = hmac.compare_digest(expected, signature)
+    except Exception as exc:
+        log.error("Patch job %s rejected: hmac_compare_error", job_id[:8])
+        report_job_failed(
+            api_base,
+            token,
+            job_id,
+            error_code="hmac_compute_error",
+            error_message=f"HMAC comparison failed: {exc}",
+            session=session,
+        )
+        return False
+
+    if not valid:
+        log.error("Patch job %s rejected: signature_invalid", job_id[:8])
+        report_job_failed(
+            api_base,
+            token,
+            job_id,
+            error_code="signature_invalid",
+            error_message=(
+                "HMAC mismatch — job rejected; possible tampering"
+            ),
+            session=session,
+        )
+        return False
+
+    return True
+
+
 def process_patch_jobs(
     api_base: str,
     device_token: str,
     endpoint_role: str | None = None,
     session: DeviceSession | None = None,
+    config_path: "Path | None" = None,
 ) -> bool:
     """Pick up at most one job per poll so a fleet of pending installs cannot starve the rest of the agent.
 
@@ -52,7 +181,9 @@ def process_patch_jobs(
     if not api_base or not token:
         return False
 
-    jobs = fetch_patch_jobs(api_base, token, session=session)
+    jobs = fetch_patch_jobs(
+        api_base, token, session=session, config_path=config_path
+    )
     if not jobs:
         return False
 
@@ -63,7 +194,33 @@ def process_patch_jobs(
     package_name = str(job.get("package_name") or "") or None
     target_version = str(job.get("target_version") or "") or None
     prior_status = str(job.get("status") or "")
+    signature = str(job.get("job_signature") or "") or None
+    endpoint_id = str(
+        job.get("endpoint_id")
+        or (session.endpoint_id if session is not None else "")
+        or ""
+    )
     if not job_id or not source or not update_uid:
+        return False
+
+    signing_key = None
+    if session is not None:
+        signing_key = str(getattr(session, "job_signing_key", "") or "").strip() or None
+        if not signing_key:
+            signing_key = str(session._config.get("JOB_SIGNING_KEY") or "").strip() or None
+    if not _verify_job_signature_fatal(
+        api_base,
+        token,
+        job_id,
+        signing_key=signing_key,
+        signature=signature,
+        endpoint_id=endpoint_id,
+        source=source,
+        update_uid=update_uid,
+        package_name=package_name,
+        target_version=target_version,
+        session=session,
+    ):
         return False
 
     if prior_status == "rebooting":
@@ -270,6 +427,7 @@ def start_patch_poller(
     interval_seconds: float,
     endpoint_role: str | None = None,
     session: DeviceSession | None = None,
+    config_path: "Path | None" = None,
 ) -> None:
     start_command_poller(
         lambda: process_patch_jobs(
@@ -277,6 +435,7 @@ def start_patch_poller(
             session.device_token if session is not None else device_token,
             endpoint_role,
             session=session,
+            config_path=config_path,
         ),
         interval_seconds,
     )

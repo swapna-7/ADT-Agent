@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 from typing import Any
@@ -180,6 +181,47 @@ def _name_matches_manifest(display_name: str, entry: dict[str, Any]) -> bool:
     return False
 
 
+def _merge_registry_and_choco_row(
+    registry_row: dict[str, Any],
+    choco_row: dict[str, Any],
+    choco_id: str,
+) -> dict[str, Any]:
+    """Keep the higher version as primary; union sources and annotate delivery."""
+    from version_compare import compare_versions
+
+    merged = dict(registry_row)
+    reg_ver = str(registry_row.get("version") or "0")
+    choco_ver = str(choco_row.get("version") or "0")
+    try:
+        choco_is_primary = compare_versions(choco_ver, reg_ver) > 0
+    except Exception:
+        choco_is_primary = False
+
+    if choco_is_primary:
+        merged["version"] = choco_row.get("version")
+        merged["source"] = "chocolatey"
+        merged["package_type"] = "chocolatey"
+        merged["delivery_channel"] = "chocolatey"
+    else:
+        merged["delivery_channel"] = str(
+            registry_row.get("delivery_channel")
+            or registry_row.get("source")
+            or "registry"
+        )
+
+    sources = list(registry_row.get("sources") or [])
+    if registry_row.get("source") and registry_row["source"] not in sources:
+        sources.append(str(registry_row["source"]))
+    if "chocolatey" not in sources:
+        sources.append("chocolatey")
+    merged["sources"] = sources
+
+    evidence = dict(registry_row.get("evidence") or {})
+    evidence["choco_id"] = choco_id
+    merged["evidence"] = evidence
+    return merged
+
+
 def merge_chocolatey_inventory(
     inventory_rows: list[dict[str, Any]],
     choco_rows: list[dict[str, Any]],
@@ -209,13 +251,11 @@ def merge_chocolatey_inventory(
                     break
 
         if matched_idx is not None:
-            sources = list(rows[matched_idx].get("sources") or [])
-            if "chocolatey" not in sources:
-                sources.append("chocolatey")
-            rows[matched_idx]["sources"] = sources
-            evidence = dict(rows[matched_idx].get("evidence") or {})
-            evidence["choco_id"] = choco_id
-            rows[matched_idx]["evidence"] = evidence
+            rows[matched_idx] = _merge_registry_and_choco_row(
+                rows[matched_idx],
+                choco_row,
+                choco_id,
+            )
             continue
 
         display = choco_id.replace(".", " ").replace("-", " ").title()
@@ -227,6 +267,7 @@ def merge_chocolatey_inventory(
                 "publisher": "Unknown (Chocolatey)",
                 "package_type": "chocolatey",
                 "source": "chocolatey",
+                "delivery_channel": "chocolatey",
                 "sources": ["chocolatey"],
                 "evidence": {"choco_id": choco_id},
                 "category": str(entry.get("category") if entry else "APPLICATION"),
@@ -268,23 +309,103 @@ def enrich_inventory_snapshot(
     return merged
 
 
+_CHOCO_ID_RE = re.compile(r"^[a-z0-9][\w.-]{0,99}$", re.IGNORECASE)
+_CHOCO_VERSION_RE = re.compile(r"^[\w.+-]{1,64}$")
+
+
+def _safe_choco_id(value: str) -> str | None:
+    cleaned = (value or "").strip()
+    if not cleaned or not _CHOCO_ID_RE.fullmatch(cleaned):
+        return None
+    return cleaned.lower()
+
+
+def _safe_choco_version(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if not cleaned:
+        return None
+    if not _CHOCO_VERSION_RE.fullmatch(cleaned):
+        return None
+    return cleaned
+
+
 def install_choco_package(
     choco_path: str,
     choco_id: str,
     version_available: str | None,
+    manifest_cache: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Upgrade a package via Chocolatey (non-manifest apps only)."""
+    """Upgrade a package via Chocolatey using argv-only invocation (no shell)."""
+    if manifest_cache is None:
+        return {
+            "exit_code": -1,
+            "ok": False,
+            "error_code": "manifest_unavailable",
+            "error_message": (
+                "app_version_manifest cache unavailable; cannot validate choco_id"
+            ),
+            "version_after": None,
+        }
+
+    if not manifest_cache:
+        return {
+            "exit_code": -1,
+            "ok": False,
+            "error_code": "manifest_cache_empty",
+            "error_message": (
+                "app_version_manifest cache is empty; cannot validate choco_id — install blocked"
+            ),
+            "version_after": None,
+        }
+
+    safe_id = _safe_choco_id(choco_id)
+    if not safe_id:
+        return {
+            "exit_code": 1,
+            "ok": False,
+            "error_code": "unknown_canonical_id",
+            "error_message": "Chocolatey package id is missing or malformed.",
+            "version_after": None,
+        }
+
+    allowed_ids = {
+        str(entry.get("choco_id") or "").strip().lower()
+        for entry in manifest_cache
+        if str(entry.get("choco_id") or "").strip()
+    }
+    if safe_id not in allowed_ids:
+        return {
+            "exit_code": -1,
+            "ok": False,
+            "error_code": "unknown_canonical_id",
+            "error_message": (
+                f"choco_id '{safe_id}' not in manifest allowlist — install blocked"
+            ),
+            "version_after": None,
+        }
+
+    safe_version = _safe_choco_version(version_available)
+    if version_available and str(version_available).strip() and not safe_version:
+        return {
+            "exit_code": 1,
+            "ok": False,
+            "error_code": "invalid_target_version",
+            "error_message": "Chocolatey target version is malformed.",
+            "version_after": None,
+        }
     cmd = [
         choco_path,
         "upgrade",
-        choco_id,
+        safe_id,
         "--yes",
         "--no-color",
         "--limit-output",
         "--fail-on-error-output",
     ]
-    if version_available:
-        cmd.extend(["--version", version_available, "--ignore-checksums"])
+    if safe_version:
+        cmd.extend(["--version", safe_version, "--ignore-checksums"])
     try:
         proc = subprocess.run(
             cmd,
@@ -292,9 +413,24 @@ def install_choco_package(
             text=True,
             timeout=600,
             check=False,
+            shell=False,
         )
     except subprocess.TimeoutExpired:
-        return {"exit_code": -1, "error_message": "choco upgrade timed out"}
+        return {
+            "exit_code": -1,
+            "ok": False,
+            "error_code": "timeout",
+            "error_message": "choco upgrade timed out after 600s",
+            "version_after": None,
+        }
+    except Exception as exc:
+        return {
+            "exit_code": -1,
+            "ok": False,
+            "error_code": "subprocess_error",
+            "error_message": str(exc),
+            "version_after": None,
+        }
 
     stdout = proc.stdout or ""
     stderr = proc.stderr or ""
@@ -309,15 +445,16 @@ def install_choco_package(
                 "--local-only",
                 "--limit-output",
                 "--exact",
-                choco_id,
+                safe_id,
             ],
             capture_output=True,
             text=True,
             timeout=15,
             check=False,
+            shell=False,
         )
         for line in (verify.stdout or "").splitlines():
-            if "|" in line and line.split("|")[0].strip().lower() == choco_id.lower():
+            if "|" in line and line.split("|")[0].strip().lower() == safe_id:
                 version_after = line.split("|", 1)[1].strip()
                 break
     except Exception:

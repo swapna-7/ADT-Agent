@@ -24,6 +24,14 @@ _NOISE_PATTERNS = [
     r"\s*-\s*(en-US|English \(United States\))\s*$",
 ]
 
+# AppX / MSIX package IDs look like "5319275A.WhatsAppDesktop" or "Microsoft.WindowsCalculator".
+_APPX_PACKAGE_PREFIX = re.compile(
+    r"^(?:"
+    r"[0-9A-Fa-f]{8,}|"
+    r"Microsoft|Adobe|Google|Mozilla|Amazon|Intel|NVIDIA|Realtek|ASUS|Dell|HP|Lenovo"
+    r")\."
+)
+
 # Version-ish tails inside a display name, e.g. "Notepad++ 8.6.4" or "Python 3.12.1 (64-bit)".
 _TRAILING_VERSION = re.compile(r"\s+v?\d+(?:\.\d+)*(?:[a-z]\d*)?\s*$", re.IGNORECASE)
 
@@ -84,15 +92,19 @@ _PRODUCT_RULES: list[tuple[re.Pattern[str], str, str]] = [
     (re.compile(r"^microsoft teams"), "microsoft", "teams"),
     (re.compile(r"^microsoft onedrive|^onedrive$"), "microsoft", "onedrive"),
     (re.compile(r"^microsoft outlook|^outlook \("), "microsoft", "outlook"),
-    (re.compile(r"^adobe acrobat reader|^adobe reader"), "adobe", "acrobat_reader"),
+    (re.compile(r"^adobe acrobat reader|^adobe reader|^adobeacrobatreadercoreapp$"), "adobe", "acrobat_reader"),
     (re.compile(r"^adobe acrobat(?! reader)"), "adobe", "acrobat"),
     (re.compile(r"^libreoffice"), "libreoffice", "libreoffice"),
     (re.compile(r"^zoom(?: workplace| meetings)?$|^zoom\b"), "zoom", "zoom"),
     (re.compile(r"^slack$|^slack\b"), "salesforce", "slack"),
+    (re.compile(r"^whatsapp(?:desktop)?$|^whats\s*app(?:\s*desktop)?$"), "meta", "whatsapp"),
+    (re.compile(r"^adobeacrobatreadercoreapp$"), "adobe", "acrobat_reader"),
     (re.compile(r"^notepad\+\+"), "notepad-plus-plus", "notepad++"),
     (re.compile(r"^7-zip"), "7-zip", "7-zip"),
     (re.compile(r"^winrar"), "rarlab", "winrar"),
     (re.compile(r"^vlc media player|^vlc$"), "videolan", "vlc_media_player"),
+    # Bare ProductName from file probes (e.g. ".NET" next to a host/runtime install).
+    (re.compile(r"^\.net$"), "microsoft", ".net_runtime"),
     # Dev tools
     (re.compile(r"^(microsoft )?visual studio code(?! insiders)|^vs code$"), "microsoft", "visual_studio_code"),
     (re.compile(r"^(microsoft )?visual studio \d{4}"), "microsoft", "visual_studio"),
@@ -154,11 +166,33 @@ class Normalized(NamedTuple):
     confident: bool
 
 
+def strip_appx_package_prefix(raw: str) -> str:
+    """Turn AppX package IDs into something closer to a product name.
+
+    Store packages report `5319275A.WhatsAppDesktop` / `Microsoft.WindowsCalculator` as Name.
+    Dedup and product rules need the suffix (`WhatsAppDesktop`), not the publisher prefix.
+    """
+    name = (raw or "").strip()
+    if not name or " " in name or "." not in name:
+        return name
+    if _APPX_PACKAGE_PREFIX.match(name):
+        return name.split(".", 1)[1]
+    head, _, rest = name.partition(".")
+    # Generic publisher-looking prefix: short alphanumeric token before a PascalCase product.
+    if rest and head.replace("_", "").isalnum() and len(head) <= 16 and re.match(r"^[A-Za-z]", rest):
+        return rest
+    return name
+
+
 def clean_display_name(raw: str) -> str:
     """Strip architecture/locale noise and a trailing version from a display name."""
-    name = (raw or "").strip()
+    name = strip_appx_package_prefix((raw or "").strip())
     if not name:
         return ""
+    # CamelCase AppX leftovers: WhatsAppDesktop → WhatsApp Desktop for product-rule matching.
+    if " " not in name and re.search(r"[a-z][A-Z]", name):
+        name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
+        name = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", name)
     name = _TRADEMARK.sub("", name)
     for pattern in _NOISE_PATTERNS:
         name = re.sub(pattern, "", name, flags=re.IGNORECASE)
@@ -345,6 +379,8 @@ def normalize_row(
     """Map one raw inventory row onto a canonical identity."""
     cleaned = clean_display_name(name)
     lowered = cleaned.lower()
+    # AppX leftovers become "Whats App Desktop"; compact form still matches product rules.
+    compact = re.sub(r"[^a-z0-9+.-]+", "", lowered)
 
     # Distro packages carry precise names and packaging-significant versions, so they are matched
     # before display-name heuristics and their version is never reduced to dotted numerics.
@@ -366,7 +402,7 @@ def normalize_row(
     norm_version, release = _versions(name, version)
 
     for pattern, vendor, product in _PRODUCT_RULES:
-        if pattern.match(lowered):
+        if pattern.match(lowered) or pattern.match(compact):
             return Normalized(vendor, product, norm_version, release, True)
 
     fallback_product = re.sub(r"[^\w+.-]+", "_", lowered).strip("_")

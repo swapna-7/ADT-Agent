@@ -1512,10 +1512,32 @@ def apply_update(
                 error_code="chocolatey_missing",
                 error_message="Chocolatey is not installed on this endpoint.",
             )
-        choco_id = (package_name or update_uid.replace("choco:", "", 1) if update_uid else "") or ""
+        requested = (
+            package_name or (update_uid.replace("choco:", "", 1) if update_uid else "") or ""
+        ).strip().lower()
+        if not requested:
+            return _apply_ok(
+                exit_code=1,
+                error_code="unknown_canonical_id",
+                error_message="Chocolatey package id missing from job.",
+            )
+        if not api_base or not device_token:
+            return _apply_ok(
+                exit_code=1,
+                error_code="manifest_unavailable",
+                error_message=(
+                    "app_version_manifest cache unavailable; cannot validate choco_id"
+                ),
+            )
+        manifest_cache = fetch_app_manifest(api_base, device_token)
         if on_progress:
             on_progress("installing")
-        raw = install_choco_package(str(choco_path), choco_id, target_version)
+        raw = install_choco_package(
+            str(choco_path),
+            requested,
+            target_version,
+            manifest_cache=manifest_cache,
+        )
         return _apply_ok(
             exit_code=int(raw.get("exit_code") or 1),
             stdout=str(raw.get("stdout") or ""),

@@ -34,6 +34,10 @@ class DeviceSession:
         self.device_token = str(config.get("DEVICE_TOKEN") or "").strip()
 
     @property
+    def job_signing_key(self) -> str:
+        return str(self._config.get("JOB_SIGNING_KEY") or "").strip()
+
+    @property
     def enrollment_code(self) -> str:
         return str(self._config.get("ENROLLMENT_CODE") or "").strip()
 
@@ -58,12 +62,14 @@ class DeviceSession:
                 "Device token rejected by Vizhi; re-enrolling with stored enrollment code %s…",
                 code[:8],
             )
+            device_name = str(self._config.get("DEVICE_NAME") or "").strip() or None
             try:
                 result = enroll(
                     self.api_base,
                     code,
                     self.agent_version,
                     role=str(self._config.get("ROLE") or "").strip() or None,
+                    device_name=device_name,
                 )
             except EnrollmentError as exc:
                 log.error("Automatic re-enrollment failed: %s", exc)
@@ -75,12 +81,17 @@ class DeviceSession:
                 self._config["ROLE"] = result["ROLE"]
 
             normalized = normalize_code(code)
+            job_key = str(result.get("JOB_SIGNING_KEY") or "").strip()
 
             def patch(cfg: dict[str, Any]) -> dict[str, Any]:
                 cfg["ENDPOINT_ID"] = self.endpoint_id
                 cfg["DEVICE_TOKEN"] = self.device_token
                 cfg["ENROLLMENT_CODE"] = normalized
                 cfg["API_BASE"] = self.api_base
+                if job_key:
+                    cfg["JOB_SIGNING_KEY"] = job_key
+                if device_name:
+                    cfg["DEVICE_NAME"] = device_name
                 if self._config.get("MACHINE_GUID"):
                     cfg["MACHINE_GUID"] = self._config["MACHINE_GUID"]
                 if self._config.get("AGENT_AUTO_UPDATE"):

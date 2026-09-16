@@ -171,6 +171,39 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def verify_binary_signature(binary_path: Path, sig_b64: str) -> bool:
+    try:
+        import base64
+        import hashlib
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        from ed25519_verify_key import AGENT_VERIFY_PUBLIC_KEY
+
+        pub_key = Ed25519PublicKey.from_public_bytes(base64.b64decode(AGENT_VERIFY_PUBLIC_KEY))
+        sig = base64.b64decode(sig_b64)
+        digest = hashlib.sha256(binary_path.read_bytes()).digest()
+        pub_key.verify(sig, digest)
+        return True
+    except Exception as exc:
+        log.error("Binary signature verification failed: %s", exc)
+        return False
+
+
+def report_update_failed(api_base: str, device_token: str, reason: str) -> None:
+    base = (api_base or "").strip().rstrip("/")
+    if not base or not device_token:
+        return
+    try:
+        requests.post(
+            f"{base}/api/agent/update-failed",
+            headers=device_headers(device_token),
+            json={"reason": (reason or "")[:200]},
+            timeout=15,
+        )
+    except Exception:
+        pass
+
+
 def download_and_verify(
     vizhi_download_url: str,
     dest: Path,
@@ -178,6 +211,7 @@ def download_and_verify(
     *,
     device_token: str,
     timeout: int = DOWNLOAD_TIMEOUT,
+    expected_sig_b64: str | None = None,
 ) -> bool:
     """Download from the Vizhi /download URL only. Each retry issues a fresh 302."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -227,7 +261,6 @@ def download_and_verify(
                 time.sleep(DOWNLOAD_RETRY_SLEEP)
             continue
 
-        actual = digest.hexdigest()
         if actual != expected:
             log.warning(
                 "SHA-256 mismatch on attempt %s: expected %s got %s",
@@ -242,6 +275,25 @@ def download_and_verify(
             if attempt < MAX_DOWNLOAD_ATTEMPTS:
                 time.sleep(DOWNLOAD_RETRY_SLEEP)
             continue
+        pub = ""
+        try:
+            from ed25519_verify_key import AGENT_VERIFY_PUBLIC_KEY
+
+            pub = AGENT_VERIFY_PUBLIC_KEY or ""
+        except Exception:
+            pub = ""
+        if pub:
+            if not expected_sig_b64 or not verify_binary_signature(dest, expected_sig_b64):
+                try:
+                    dest.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                report_update_failed(
+                    "",
+                    device_token,
+                    "signature_invalid",
+                )
+                return False
         return True
     return False
 
@@ -297,6 +349,7 @@ def maybe_apply_update(
 
     remote_version = str(latest.get("version") or "").strip()
     sha256 = str(latest.get("sha256") or "").strip()
+    signature = str(latest.get("signature") or latest.get("sig_b64") or "").strip()
     url = str(latest.get("url") or "").strip() or f"{DOWNLOAD_PATH}?platform={platform_tag()}"
     if not remote_version or not sha256:
         log.warning("Agent update payload missing version or sha256")
@@ -318,7 +371,13 @@ def maybe_apply_update(
     staging_dir = Path(data_dir) / "update"
     staging = staging_dir / Path(install_exe).name
     download_url = _absolute_url(api_base, url)
-    if not download_and_verify(download_url, staging, sha256, device_token=device_token):
+    if not download_and_verify(
+        download_url,
+        staging,
+        sha256,
+        device_token=device_token,
+        expected_sig_b64=signature or None,
+    ):
         return False
 
     if not replace_installed_binary(staging, install_exe):

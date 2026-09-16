@@ -120,6 +120,31 @@ def test_unrecognised_products_are_kept_not_guessed() -> None:
     assert result.product == "acme_internal_tool"
 
 
+def test_appx_package_id_normalizes_to_product() -> None:
+    result = normalize_row(
+        "5319275A.WhatsAppDesktop",
+        "2.2634.101.0",
+        "CN=24803D75-212C-471A-BC57-9EF86AB91435",
+    )
+    assert (result.vendor, result.product) == ("meta", "whatsapp")
+    assert result.confident
+
+
+def test_adobe_appx_core_app_maps_to_reader() -> None:
+    result = normalize_row("AdobeAcrobatReaderCoreApp", "23.0.0.0", "CN=Adobe Inc.")
+    assert (result.vendor, result.product) == ("adobe", "acrobat_reader")
+
+
+def test_bare_dotnet_file_probe_maps_to_runtime() -> None:
+    result = normalize_row(
+        ".NET",
+        "8.0.30 @Commit: a83db3e0eb2defb6220e15dae2f1a0462fdbf99f",
+        "Microsoft Corporation",
+    )
+    assert (result.vendor, result.product) == ("microsoft", ".net_runtime")
+    assert result.version == "8.0.30"
+
+
 def test_distro_packages_match_on_package_name() -> None:
     result = normalize_row("libssl3", "3.0.11-1", None, package_type="deb")
     assert (result.vendor, result.product) == ("openssl", "openssl")

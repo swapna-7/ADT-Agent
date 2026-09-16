@@ -17,6 +17,7 @@ DEFAULT_INTERVALS: dict[str, int] = {
     "command_poll": 20,
     "auto_update": 21600,
     "vuln_eval": 21600,
+    "branding": 21600,
 }
 
 ENV_OVERRIDES: dict[str, str] = {
@@ -26,6 +27,7 @@ ENV_OVERRIDES: dict[str, str] = {
     "patch_poll": "PATCH_POLL_SECONDS",
     "command_poll": "COMMAND_POLL_SECONDS",
     "auto_update": "AUTO_UPDATE_SECONDS",
+    "branding": "BRANDING_INTERVAL_SECONDS",
 }
 
 

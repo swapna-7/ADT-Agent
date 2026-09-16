@@ -27,7 +27,7 @@ from normalize import identity_key, normalize_row, parse_version
 SoftwareRow = dict[str, Any]
 
 # Sources in descending trust order: earlier sources win on conflicting version/publisher values.
-SOURCE_PRIORITY = ["registry", "msi", "appx", "kb", "services", "files"]
+SOURCE_PRIORITY = ["registry", "msi", "appx", "kb", "chocolatey", "services", "files", "startup", "scheduled_task"]
 
 DEFAULT_TIMEOUT = 180
 
@@ -101,13 +101,22 @@ function Get-MsiApps {
 
 function Get-AppxApps {
   Get-AppxPackage -AllUsers | Where-Object { -not $_.IsFramework } | ForEach-Object {
+    $pkg = $_
+    $display = $null
+    try {
+      $manifest = Get-AppxPackageManifest -Package $pkg
+      if ($manifest -and $manifest.Package -and $manifest.Package.Properties) {
+        $display = "$($manifest.Package.Properties.DisplayName)".Trim()
+      }
+    } catch {}
+    if (-not $display) { $display = "$($pkg.Name)" }
     [pscustomobject]@{
-      name           = "$($_.Name)"
-      display_name   = "$($_.Name)"
-      version        = "$($_.Version)"
-      publisher      = "$($_.Publisher)"
-      package_family = "$($_.PackageFamilyName)"
-      install_path   = "$($_.InstallLocation)"
+      name           = "$($pkg.Name)"
+      display_name   = $display
+      version        = "$($pkg.Version)"
+      publisher      = "$($pkg.Publisher)"
+      package_family = "$($pkg.PackageFamilyName)"
+      install_path   = "$($pkg.InstallLocation)"
     }
   }
 }
@@ -170,6 +179,71 @@ function Get-HotFixApps {
   }
 }
 
+function Get-StartupApps {
+  $paths = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
+  )
+  $out = New-Object System.Collections.ArrayList
+  foreach ($path in $paths) {
+    if (-not (Test-Path $path)) { continue }
+    $props = Get-ItemProperty $path -ErrorAction SilentlyContinue
+    if (-not $props) { continue }
+    $props.PSObject.Properties | Where-Object {
+      $_.Name -notmatch '^PS' -and $_.Value
+    } | ForEach-Object {
+      $null = $out.Add([pscustomobject]@{
+        name      = "$($_.Name)".Trim()
+        version   = "startup"
+        publisher = "Startup"
+        command   = "$($_.Value)"
+        hive_path = "$path"
+      })
+    }
+  }
+  $folders = @(
+    "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup",
+    "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+  )
+  foreach ($folder in $folders) {
+    if (-not (Test-Path $folder)) { continue }
+    Get-ChildItem -Path $folder -File -ErrorAction SilentlyContinue | ForEach-Object {
+      $null = $out.Add([pscustomobject]@{
+        name      = "$($_.BaseName)".Trim()
+        version   = "startup"
+        publisher = "Startup"
+        command   = "$($_.FullName)"
+        hive_path = "$folder"
+      })
+    }
+  }
+  return $out
+}
+
+function Get-ScheduledTaskApps {
+  $winRoot = ($env:SystemRoot + '\').ToLowerInvariant()
+  Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object {
+    $task = $_
+    foreach ($action in @($task.Actions)) {
+      $exe = "$($action.Execute)".Trim().Trim('"')
+      if (-not $exe) { continue }
+      $exeLower = $exe.ToLowerInvariant()
+      if ($exeLower.StartsWith($winRoot) -or $exeLower.StartsWith('c:\windows\')) { continue }
+      $name = "$($task.TaskName)".Trim()
+      if (-not $name) { $name = [IO.Path]::GetFileNameWithoutExtension($exe) }
+      [pscustomobject]@{
+        name      = $name
+        version   = "scheduled_task"
+        publisher = "Task Scheduler"
+        exe_path  = $exe
+        task_path = "$($task.TaskPath)"
+      }
+    }
+  }
+}
+
 function Get-OsFacts {
   $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
   $hotfixes = @(Get-CimInstance Win32_QuickFixEngineering |
@@ -191,6 +265,8 @@ $result = [pscustomobject]@{
   services = @(Get-ServiceApps)
   files    = @(Get-FileApps)
   hotfix   = @(Get-HotFixApps)
+  startup  = @(Get-StartupApps)
+  scheduled_tasks = @(Get-ScheduledTaskApps)
   os       = Get-OsFacts
 }
 
@@ -309,6 +385,7 @@ class _Merger:
     """
 
     AUTHORITATIVE = {"registry", "msi", "appx", "kb"}
+    INFORMATIONAL = {"startup", "scheduled_task"}
 
     def __init__(self) -> None:
         self.rows: dict[str, SoftwareRow] = {}
@@ -369,6 +446,7 @@ class _Merger:
             "package_type": entry["package_type"],
             "source": source,
             "sources": [source],
+            "delivery_channel": source,
             "evidence": {source: entry["evidence"]},
             "normalized_vendor": normalized.vendor,
             "normalized_product": normalized.product,
@@ -388,6 +466,7 @@ class _Merger:
             row["source"] = source
             row["package_type"] = entry["package_type"]
             row["name"] = entry["display"]
+            row["delivery_channel"] = source
 
         if row["publisher"] == "unknown" and _text(entry["publisher"]):
             row["publisher"] = _text(entry["publisher"])
@@ -417,6 +496,50 @@ class _Merger:
             key=lambda r: parse_version(r.get("normalized_version")),
         )
 
+    def _collapse_appx_side_by_side(self) -> None:
+        """Store packages often leave older AppX versions installed; keep the newest only.
+
+        MSI/registry side-by-side runtimes (.NET 8.0.8 + 8.0.21) stay separate so advisories can
+        still evaluate each release. Pure AppX duplicates do not deserve that treatment.
+        """
+        groups: dict[tuple[str | None, str], list[str]] = {}
+        for key, row in self.rows.items():
+            groups.setdefault(
+                (row.get("normalized_vendor"), str(row.get("normalized_product") or "")),
+                [],
+            ).append(key)
+
+        for keys in groups.values():
+            if len(keys) < 2:
+                continue
+            candidates = [self.rows[k] for k in keys if k in self.rows]
+            if len(candidates) < 2:
+                continue
+            # Only collapse when every row is AppX-origin (optionally corroborated by files).
+            if not all(
+                str(r.get("package_type")) == "appx"
+                or (str(r.get("source")) == "appx" and set(r.get("sources") or []).issubset({"appx", "files"}))
+                for r in candidates
+            ):
+                continue
+
+            best = max(candidates, key=lambda r: parse_version(r.get("normalized_version")))
+            best_key = next(k for k in keys if self.rows.get(k) is best)
+            for key in keys:
+                if key == best_key or key not in self.rows:
+                    continue
+                loser = self.rows[key]
+                for source in loser.get("sources") or []:
+                    if source not in best["sources"]:
+                        best["sources"].append(source)
+                    if source in (loser.get("evidence") or {}):
+                        best["evidence"].setdefault(source, loser["evidence"][source])
+                del self.rows[key]
+
+            # Rebuild product index for this product.
+            vendor, product = best.get("normalized_vendor"), str(best.get("normalized_product") or "")
+            self.by_product[(vendor, product)] = [best_key]
+
     def result(self) -> list[SoftwareRow]:
         for entry in self._deferred:
             normalized = entry["normalized"]
@@ -430,10 +553,13 @@ class _Merger:
                 # it exists, so keep it rather than losing the finding.
                 self._insert(entry)
         self._deferred.clear()
+        self._collapse_appx_side_by_side()
 
         rows = list(self.rows.values())
         for row in rows:
             row["sources"].sort(key=_source_rank)
+            if not row.get("delivery_channel"):
+                row["delivery_channel"] = str(row.get("source") or "")
         rows.sort(key=lambda r: str(r.get("name", "")).lower())
         return rows
 
@@ -518,6 +644,7 @@ def collect_windows_inventory(
         )
 
     for item in _as_list(data.get("appx")):
+        # Prefer manifest DisplayName; fall back to package ID (prefix stripped in normalize).
         merger.add(
             source="appx",
             name=item.get("display_name") or item.get("name"),
@@ -526,6 +653,7 @@ def collect_windows_inventory(
             package_type="appx",
             evidence={
                 "package_family": _text(item.get("package_family")),
+                "package_name": _text(item.get("name")),
                 "install_path": _text(item.get("install_path")),
             },
         )
@@ -564,6 +692,32 @@ def collect_windows_inventory(
             publisher=item.get("publisher"),
             package_type="other",
             evidence={"file_path": _text(item.get("file_path"))},
+        )
+
+    for item in _as_list(data.get("startup")):
+        merger.add(
+            source="startup",
+            name=item.get("name"),
+            version=item.get("version") or "startup",
+            publisher=item.get("publisher") or "Startup",
+            package_type="startup",
+            evidence={
+                "command": _text(item.get("command")),
+                "hive_path": _text(item.get("hive_path")),
+            },
+        )
+
+    for item in _as_list(data.get("scheduled_tasks")):
+        merger.add(
+            source="scheduled_task",
+            name=item.get("name"),
+            version=item.get("version") or "scheduled_task",
+            publisher=item.get("publisher") or "Task Scheduler",
+            package_type="scheduled_task",
+            evidence={
+                "exe_path": _text(item.get("exe_path")),
+                "task_path": _text(item.get("task_path")),
+            },
         )
 
     os_block = data.get("os")

@@ -40,6 +40,8 @@ from enrollment import platform_tag, system_hostname, system_username
 from first_run import needs_enrollment, prompt_and_enroll
 from normalize import normalize_row
 from patch_runner import start_patch_poller
+from branding import poll_branding
+from desktop_alerts import poll_and_show_alerts
 from report import (
     fetch_pending_commands as fetch_agent_commands,
     report_command_result,
@@ -717,8 +719,19 @@ def process_pending_commands(
     timeout_seconds: int,
     api_base: str = "",
     device_token: str = "",
+    data_dir: Path | None = None,
 ) -> bool:
     use_api = bool(api_base and device_token)
+    if use_api:
+        try:
+            poll_and_show_alerts(api_base, device_token)
+        except Exception:
+            logging.exception("Desktop alert poll failed")
+        if data_dir is not None:
+            try:
+                poll_branding(api_base, device_token, data_dir, force=False)
+            except Exception:
+                logging.exception("Branding poll (command cadence) failed")
     pending = (
         fetch_agent_commands(api_base, device_token)
         if use_api
@@ -738,6 +751,28 @@ def process_pending_commands(
         command_id = str(row.get("id", ""))
         command_text = str(row.get("command", "")).strip()
         if not command_id:
+            continue
+        from command_policy import command_age_expired, is_blocked_command
+
+        if command_age_expired(str(row.get("created_at") or "") or None):
+            report_command_result(
+                api_base,
+                device_token,
+                command_id,
+                "exit_code=-1\nstdout:\n\nstderr:\nCOMMAND_EXPIRED",
+                session=session,
+            )
+            continue
+        blocked = is_blocked_command(command_text)
+        if blocked:
+            logging.warning("Blocked command by policy id=%s", command_id)
+            report_command_result(
+                api_base,
+                device_token,
+                command_id,
+                "exit_code=-1\nstdout:\n\nstderr:\nBLOCKED_BY_POLICY",
+                session=session,
+            )
             continue
         if command_text == AGENT_STOP_COMMAND:
             logging.info("Remote stop command received id=%s", command_id)
@@ -762,6 +797,9 @@ def process_pending_commands(
 
 
 def setup_logging(log_file: Path, verbose: bool, console_log: bool) -> None:
+    from log_rotate import rotate_logs
+
+    rotate_logs(log_file, max_size_mb=10, keep_files=3)
     level = logging.DEBUG if verbose else logging.INFO
     handlers: list[logging.Handler] = [logging.FileHandler(log_file, encoding="utf-8")]
     if console_log:
@@ -792,6 +830,21 @@ def resolve_data_dir() -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Vizhi Agent (macOS)")
     parser.add_argument("--clear", action="store_true")
+    parser.add_argument(
+        "--code",
+        default="",
+        help="Organisation enrollment code (VZ-XXXX-XXXX-XXXX). Optional if you type it when prompted.",
+    )
+    parser.add_argument(
+        "--name",
+        default="",
+        help="Device display name in Vizhi (defaults to hostname if omitted).",
+    )
+    parser.add_argument(
+        "--api",
+        default="",
+        help="Vizhi portal URL for enrollment (defaults to the URL baked into this build).",
+    )
     args = parser.parse_args()
 
     data_dir = resolve_data_dir()
@@ -811,11 +864,16 @@ def main() -> None:
 
     env = load_env(find_env_file())
     local_config = load_local_config(config_file)
-    api_base = resolve_api_base(local_config, env)
+    api_base = resolve_api_base(local_config, env, override=args.api)
 
     if needs_enrollment(local_config):
         enrolled = prompt_and_enroll(
-            api_base, config_file, AGENT_VERSION, local_config=local_config
+            api_base,
+            config_file,
+            AGENT_VERSION,
+            code=args.code or None,
+            name=args.name or None,
+            local_config=local_config,
         )
         local_config = {str(k): str(v) for k, v in enrolled.items()}
 
@@ -880,139 +938,161 @@ def main() -> None:
                 command_timeout_seconds,
                 api_base,
                 device_token,
+                data_dir,
             ),
             intervals["command_poll"],
         )
 
     if device_token and api_base:
         start_patch_poller(
-            api_base, device_token, intervals["patch_poll"], endpoint_role
+            api_base,
+            device_token,
+            intervals["patch_poll"],
+            endpoint_role,
+            config_path=config_file,
         )
 
     try:
         while True:
-            now_ts = time.time()
-            local_config = load_local_config(config_file)
-            last_runs = load_last_runs(local_config)
+            try:
+                now_ts = time.time()
+                local_config = load_local_config(config_file)
+                last_runs = load_last_runs(local_config)
 
-            if now_ts >= next_self_update and device_token:
-                next_self_update = next_check_deadline(intervals["auto_update"])
-                if read_auto_update_flag(local_config, env) and should_self_update(
-                    frozen=is_frozen(), install_exe=INSTALL_BIN
+                if now_ts >= next_self_update and device_token:
+                    next_self_update = next_check_deadline(intervals["auto_update"])
+                    if read_auto_update_flag(local_config, env) and should_self_update(
+                        frozen=is_frozen(), install_exe=INSTALL_BIN
+                    ):
+                        try:
+                            if maybe_apply_update(
+                                api_base=api_base,
+                                device_token=device_token,
+                                data_dir=data_dir,
+                                install_exe=INSTALL_BIN,
+                            ):
+                                logging.info(
+                                    "Agent binary replaced; exiting so launchd restarts"
+                                )
+                                raise SystemExit(0)
+                        except SystemExit:
+                            raise
+                        except Exception:
+                            logging.exception("Self-update check failed")
+
+                if should_run("inventory", last_runs, intervals["inventory"], now_ts):
+                    try:
+                        software_snapshot, os_facts = collect_installed_software(
+                            logger=logging.getLogger()
+                        )
+                        logging.info(
+                            "Software snapshot: %s entries (macOS %s build %s)",
+                            len(software_snapshot),
+                            os_facts.get("os_version"),
+                            os_facts.get("build"),
+                        )
+                        if supabase_url and supabase_anon_key and endpoint_id:
+                            try:
+                                upsert_software_inventory(
+                                    supabase_url,
+                                    supabase_anon_key,
+                                    endpoint_id,
+                                    user_id,
+                                    software_snapshot,
+                                )
+                            except Exception as exc:
+                                logging.exception("Software upsert failed: %s", exc)
+                        local_config = mark_run(
+                            config_file, local_config, "inventory", now_ts
+                        )
+                        last_runs = load_last_runs(local_config)
+                    except Exception as exc:
+                        logging.exception("Inventory refresh failed: %s", exc)
+
+                if device_token and should_run(
+                    "update_scan", last_runs, intervals["update_scan"], now_ts
                 ):
                     try:
-                        if maybe_apply_update(
+                        scan = scan_updates(
                             api_base=api_base,
                             device_token=device_token,
-                            data_dir=data_dir,
-                            install_exe=INSTALL_BIN,
-                        ):
-                            logging.info(
-                                "Agent binary replaced; exiting so launchd restarts"
-                            )
-                            raise SystemExit(0)
-                    except SystemExit:
-                        raise
-                    except Exception:
-                        logging.exception("Self-update check failed")
-
-            if should_run("inventory", last_runs, intervals["inventory"], now_ts):
-                try:
-                    software_snapshot, os_facts = collect_installed_software(
-                        logger=logging.getLogger()
-                    )
-                    logging.info(
-                        "Software snapshot: %s entries (macOS %s build %s)",
-                        len(software_snapshot),
-                        os_facts.get("os_version"),
-                        os_facts.get("build"),
-                    )
-                    if supabase_url and supabase_anon_key and endpoint_id:
-                        try:
-                            upsert_software_inventory(
-                                supabase_url,
-                                supabase_anon_key,
-                                endpoint_id,
-                                user_id,
-                                software_snapshot,
-                            )
-                        except Exception as exc:
-                            logging.exception("Software upsert failed: %s", exc)
-                    local_config = mark_run(
-                        config_file, local_config, "inventory", now_ts
-                    )
-                    last_runs = load_last_runs(local_config)
-                except Exception as exc:
-                    logging.exception("Inventory refresh failed: %s", exc)
-
-            if device_token and should_run(
-                "update_scan", last_runs, intervals["update_scan"], now_ts
-            ):
-                try:
-                    scan = scan_updates(
-                        api_base=api_base,
-                        device_token=device_token,
-                        endpoint_role=endpoint_role,
-                    )
-                    report_updates(
-                        api_base,
-                        device_token,
-                        scan=scan,
-                        os_facts=os_facts,
-                        agent_version=AGENT_VERSION,
-                        platform_tag=platform_tag(),
-                    )
-                    local_config = mark_run(
-                        config_file, local_config, "update_scan", now_ts
-                    )
-                    last_runs = load_last_runs(local_config)
-                except Exception as exc:
-                    logging.exception("Update scan failed: %s", exc)
-
-            if should_run("metrics", last_runs, intervals["metrics"], now_ts):
-                cycle += 1
-                started = time.time()
-                try:
-                    payload = collect_metrics(software_snapshot)
-                    if verbose:
-                        logging.debug(
-                            "Cycle %s cpu=%s%% mem=%s%% storage=%s%%",
-                            cycle,
-                            payload["cpu"]["percent"],
-                            payload["memory"]["percent"],
-                            payload["storage"]["percent"],
+                            endpoint_role=endpoint_role,
                         )
-                    if supabase_url and supabase_anon_key:
-                        try:
-                            push_to_supabase(
-                                supabase_url, supabase_anon_key, user_id, payload
-                            )
-                            logging.info(
-                                "Cycle %s pushed in %.2fs",
-                                cycle,
-                                time.time() - started,
-                            )
-                        except Exception as exc:
-                            logging.exception(
-                                "Supabase push failed cycle %s: %s", cycle, exc
-                            )
-                    else:
-                        logging.info("Cycle %s (no Supabase)", cycle)
-                    local_config = mark_run(
-                        config_file, local_config, "metrics", now_ts
-                    )
-                    last_runs = load_last_runs(local_config)
-                except Exception as exc:
-                    logging.exception("Metric cycle %s failed: %s", cycle, exc)
+                        report_updates(
+                            api_base,
+                            device_token,
+                            scan=scan,
+                            os_facts=os_facts,
+                            agent_version=AGENT_VERSION,
+                            platform_tag=platform_tag(),
+                        )
+                        local_config = mark_run(
+                            config_file, local_config, "update_scan", now_ts
+                        )
+                        last_runs = load_last_runs(local_config)
+                    except Exception as exc:
+                        logging.exception("Update scan failed: %s", exc)
 
-            time.sleep(intervals["command_poll"])
+                if device_token and api_base and should_run(
+                    "branding", last_runs, intervals["branding"], now_ts
+                ):
+                    try:
+                        poll_branding(api_base, device_token, data_dir, force=True)
+                        local_config = mark_run(
+                            config_file, local_config, "branding", now_ts
+                        )
+                        last_runs = load_last_runs(local_config)
+                    except Exception as exc:
+                        logging.exception("Branding poll failed: %s", exc)
+
+                if should_run("metrics", last_runs, intervals["metrics"], now_ts):
+                    cycle += 1
+                    started = time.time()
+                    try:
+                        payload = collect_metrics(software_snapshot)
+                        if verbose:
+                            logging.debug(
+                                "Cycle %s cpu=%s%% mem=%s%% storage=%s%%",
+                                cycle,
+                                payload["cpu"]["percent"],
+                                payload["memory"]["percent"],
+                                payload["storage"]["percent"],
+                            )
+                        if supabase_url and supabase_anon_key:
+                            try:
+                                push_to_supabase(
+                                    supabase_url, supabase_anon_key, user_id, payload
+                                )
+                                logging.info(
+                                    "Cycle %s pushed in %.2fs",
+                                    cycle,
+                                    time.time() - started,
+                                )
+                            except Exception as exc:
+                                logging.exception(
+                                    "Supabase push failed cycle %s: %s", cycle, exc
+                                )
+                        else:
+                            logging.info("Cycle %s (no Supabase)", cycle)
+                        local_config = mark_run(
+                            config_file, local_config, "metrics", now_ts
+                        )
+                        last_runs = load_last_runs(local_config)
+                    except Exception as exc:
+                        logging.exception("Metric cycle %s failed: %s", cycle, exc)
+
+                time.sleep(intervals["command_poll"])
+            except SystemExit:
+                raise
+            except Exception as exc:
+                logging.exception(
+                    "Unexpected error in agent loop; continuing in 60s: %s", exc
+                )
+                time.sleep(60)
     except KeyboardInterrupt:
         logging.info("Stopped by user")
     except SystemExit:
         raise
-    except Exception as exc:
-        logging.exception("Fatal: %s", exc)
-        raise SystemExit(1)
 
 
 if __name__ == "__main__":

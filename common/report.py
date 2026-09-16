@@ -108,6 +108,7 @@ def fetch_patch_jobs(
     device_token: str,
     timeout: int = DEFAULT_TIMEOUT,
     session: DeviceSession | None = None,
+    config_path: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Jobs the engine has released to this endpoint (`status=sent`)."""
     resp = _api_request(
@@ -127,8 +128,24 @@ def fetch_patch_jobs(
         data = resp.json()
     except ValueError:
         return []
-    jobs = data.get("jobs") if isinstance(data, dict) else None
-    return jobs if isinstance(jobs, list) else []
+    if isinstance(data, dict):
+        minted = str(data.get("job_signing_key") or "").strip()
+        if minted and config_path is not None:
+            try:
+                from config_io import update_config
+
+                def _patch(cfg: dict[str, Any]) -> dict[str, Any]:
+                    cfg["JOB_SIGNING_KEY"] = minted
+                    return cfg
+
+                update_config(config_path, _patch)
+                if session is not None:
+                    session.reload()
+            except Exception:
+                log.exception("Could not persist JOB_SIGNING_KEY from jobs poll")
+        jobs = data.get("jobs")
+        return jobs if isinstance(jobs, list) else []
+    return []
 
 
 def report_job_status(
@@ -274,5 +291,127 @@ def report_command_result(
         return False
     if resp.status_code >= 400:
         log.warning("Command result rejected (HTTP %s): %s", resp.status_code, resp.text[:300])
+        return False
+    return True
+
+
+def fetch_desktop_alerts(
+    api_base: str,
+    device_token: str,
+    timeout: int = 20,
+    session: DeviceSession | None = None,
+) -> list[dict[str, Any]]:
+    """Pending desktop notifications for this endpoint."""
+    resp = _api_request(
+        api_base,
+        device_token,
+        "GET",
+        "/api/agent/desktop-alerts",
+        session=session,
+        timeout=timeout,
+    )
+    if resp is None:
+        return []
+    if resp.status_code >= 400:
+        log.warning("Desktop alert poll rejected (HTTP %s): %s", resp.status_code, resp.text[:300])
+        return []
+    try:
+        data = resp.json()
+    except ValueError:
+        return []
+    alerts = data.get("alerts") if isinstance(data, dict) else None
+    return alerts if isinstance(alerts, list) else []
+
+
+def report_alert_result(
+    api_base: str,
+    device_token: str,
+    delivery_id: str,
+    status: str,
+    *,
+    error_message: str | None = None,
+    timeout: int = 20,
+    session: DeviceSession | None = None,
+) -> bool:
+    body: dict[str, Any] = {"status": status}
+    if error_message:
+        body["error_message"] = error_message[:500]
+    resp = _api_request(
+        api_base,
+        device_token,
+        "POST",
+        f"/api/agent/desktop-alerts/{delivery_id}/result",
+        session=session,
+        json=body,
+        timeout=timeout,
+    )
+    if resp is None:
+        return False
+    if resp.status_code >= 400:
+        log.warning(
+            "Alert result rejected (HTTP %s): %s",
+            resp.status_code,
+            resp.text[:300],
+        )
+        return False
+    return True
+
+
+def fetch_branding(
+    api_base: str,
+    device_token: str,
+    timeout: int = 20,
+    session: DeviceSession | None = None,
+) -> dict[str, Any] | None:
+    resp = _api_request(
+        api_base,
+        device_token,
+        "GET",
+        "/api/agent/branding",
+        session=session,
+        timeout=timeout,
+    )
+    if resp is None:
+        return None
+    if resp.status_code >= 400:
+        log.warning("Branding poll rejected (HTTP %s): %s", resp.status_code, resp.text[:300])
+        return None
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def report_branding_result(
+    api_base: str,
+    device_token: str,
+    job_id: str,
+    status: str,
+    *,
+    error_message: str | None = None,
+    timeout: int = 20,
+    session: DeviceSession | None = None,
+) -> bool:
+    body: dict[str, Any] = {"status": status}
+    if error_message:
+        body["error_message"] = error_message[:500]
+    resp = _api_request(
+        api_base,
+        device_token,
+        "POST",
+        f"/api/agent/branding/{job_id}/result",
+        session=session,
+        json=body,
+        timeout=timeout,
+    )
+    if resp is None:
+        return False
+    if resp.status_code >= 400:
+        log.warning(
+            "Branding result rejected (HTTP %s): %s",
+            resp.status_code,
+            resp.text[:300],
+        )
         return False
     return True

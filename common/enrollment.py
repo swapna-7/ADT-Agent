@@ -237,6 +237,7 @@ def enroll(
     agent_version: str,
     *,
     role: str | None = None,
+    device_name: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> dict[str, str]:
     """Register this machine and return {'ENDPOINT_ID': ..., 'DEVICE_TOKEN': ...}."""
@@ -262,6 +263,8 @@ def enroll(
     }
     if role:
         body["role"] = role
+    if device_name:
+        body["name"] = device_name
 
     url = f"{base}{ENROLL_PATH}"
     logging.info("Enrolling %s with Vizhi at %s", body["hostname"], url)
@@ -305,6 +308,9 @@ def enroll(
     )
     role = str(data.get("role") or "").strip()
     out: dict[str, str] = {"ENDPOINT_ID": endpoint_id, "DEVICE_TOKEN": device_token}
+    job_key = str(data.get("job_signing_key") or "").strip()
+    if job_key:
+        out["JOB_SIGNING_KEY"] = job_key
     if role:
         out["ROLE"] = role
     return out

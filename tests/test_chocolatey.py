@@ -94,11 +94,13 @@ def test_choco_no_manifest_match():
 def test_choco_install_success():
     upgrade = MagicMock(returncode=0, stdout=" upgraded ", stderr="")
     verify = MagicMock(returncode=0, stdout="firefox|154.0\n", stderr="")
+    manifest = [{"choco_id": "firefox", "canonical_id": "mozilla-firefox"}]
     with patch.object(chocolatey.subprocess, "run", side_effect=[upgrade, verify]):
         result = chocolatey.install_choco_package(
             r"C:\ProgramData\chocolatey\bin\choco.exe",
             "firefox",
             "154.0",
+            manifest_cache=manifest,
         )
     assert result["ok"] is True
     assert result["version_after"] == "154.0"
@@ -122,4 +124,113 @@ def test_choco_merge_inventory():
         }
     ]
     merged = chocolatey.merge_chocolatey_inventory(inventory, choco_rows, manifest)
+    assert "chocolatey" in merged[0]["sources"]
+
+
+def test_install_rejects_empty_manifest_without_subprocess():
+    with patch.object(chocolatey.subprocess, "run") as run:
+        result = chocolatey.install_choco_package(
+            r"C:\ProgramData\chocolatey\bin\choco.exe",
+            "firefox",
+            "1.0.0",
+            manifest_cache=[],
+        )
+    run.assert_not_called()
+    assert result["error_code"] == "manifest_cache_empty"
+
+
+def test_install_rejects_malformed_id_without_subprocess():
+    manifest = [{"choco_id": "firefox"}]
+    with patch.object(chocolatey.subprocess, "run") as run:
+        result = chocolatey.install_choco_package(
+            r"C:\ProgramData\chocolatey\bin\choco.exe",
+            "bad;id && calc",
+            "1.0.0",
+            manifest_cache=manifest,
+        )
+    run.assert_not_called()
+    assert result["error_code"] == "unknown_canonical_id"
+
+
+def test_install_argv_only_allowlisted_id():
+    mock_upgrade = MagicMock()
+    mock_upgrade.returncode = 0
+    mock_upgrade.stdout = "Chocolatey upgraded 1/1 packages.\n"
+    mock_upgrade.stderr = ""
+    mock_list = MagicMock()
+    mock_list.returncode = 0
+    mock_list.stdout = "googlechrome|131.0.0\n"
+    with patch.object(
+        chocolatey.subprocess,
+        "run",
+        side_effect=[mock_upgrade, mock_list],
+    ) as run:
+        result = chocolatey.install_choco_package(
+            r"C:\ProgramData\chocolatey\bin\choco.exe",
+            "GoogleChrome",
+            "131.0.0",
+            manifest_cache=[{"choco_id": "googlechrome"}],
+        )
+    assert result["ok"] is True
+    upgrade_cmd = run.call_args_list[0].args[0]
+    assert upgrade_cmd[1] == "upgrade"
+    assert upgrade_cmd[2] == "googlechrome"
+    assert "--version" in upgrade_cmd
+    assert "131.0.0" in upgrade_cmd
+    assert run.call_args_list[0].kwargs.get("shell") is False
+
+
+def test_merge_choco_annotates_registry_single_row():
+    inventory = [
+        {
+            "name": "Google Chrome",
+            "software_name": "Google Chrome",
+            "version": "130.0",
+            "publisher": "Google LLC",
+            "source": "registry",
+            "sources": ["registry"],
+            "evidence": {},
+        }
+    ]
+    choco_rows = [{"choco_id": "googlechrome", "version": "130.0"}]
+    manifest = [
+        {
+            "canonical_id": "google-chrome",
+            "choco_id": "googlechrome",
+            "match_names": ["Google Chrome"],
+            "category": "BROWSER",
+        }
+    ]
+    merged = chocolatey.merge_chocolatey_inventory(inventory, choco_rows, manifest)
+    assert len(merged) == 1
+    assert "chocolatey" in merged[0]["sources"]
+    assert merged[0]["evidence"]["choco_id"] == "googlechrome"
+    assert merged[0]["delivery_channel"] == "registry"
+
+
+def test_merge_choco_higher_version_becomes_primary():
+    inventory = [
+        {
+            "name": "Google Chrome",
+            "software_name": "Google Chrome",
+            "version": "152.0.4",
+            "publisher": "Google LLC",
+            "source": "registry",
+            "sources": ["registry"],
+            "evidence": {},
+        }
+    ]
+    choco_rows = [{"choco_id": "googlechrome", "version": "154.0"}]
+    manifest = [
+        {
+            "canonical_id": "google-chrome",
+            "choco_id": "googlechrome",
+            "match_names": ["Google Chrome"],
+        }
+    ]
+    merged = chocolatey.merge_chocolatey_inventory(inventory, choco_rows, manifest)
+    assert len(merged) == 1
+    assert merged[0]["version"] == "154.0"
+    assert merged[0]["delivery_channel"] == "chocolatey"
+    assert "registry" in merged[0]["sources"]
     assert "chocolatey" in merged[0]["sources"]

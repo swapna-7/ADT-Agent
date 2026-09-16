@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import stat
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -45,6 +48,34 @@ def write_config(config: dict[str, Any], config_path: Path) -> None:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp_path, config_path)
+    protect_config_path(config_path)
+
+
+def protect_config_path(config_path: Path) -> None:
+    """Restrict config.json so unprivileged users cannot read DEVICE_TOKEN."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    try:
+        if sys.platform == "win32":
+            grants = [
+                "icacls",
+                str(config_path),
+                "/inheritance:r",
+                "/grant:r",
+                "SYSTEM:F",
+                "/grant:r",
+                "Administrators:R",
+            ]
+            user = os.environ.get("USERNAME")
+            if user:
+                grants.extend(["/grant:r", f"{user}:F"])
+            subprocess.run(grants, capture_output=True, check=False)
+            return
+        config_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            os.chown(config_path, 0, 0)
+    except Exception:
+        pass
 
 
 def update_config(

@@ -42,9 +42,11 @@ Set-Acl $installDir $acl
 $action = New-ScheduledTaskAction -Execute $installExe
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet `
-    -RestartCount 3 `
+    -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -StartWhenAvailable `
+    -AllowStartIfOnBatteries `
     -RunOnlyIfNetworkAvailable
 $principal = New-ScheduledTaskPrincipal `
     -UserId 'SYSTEM' `

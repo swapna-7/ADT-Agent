@@ -6,9 +6,16 @@ build/
 dist/
 *.spec
 .env
+.env.local
+.env.production
+.env.*.local
 windows/.env
 linux/.env
 mac/.env
 .env-backup/
 api_config.py
 common/api_config.py
+*.pem
+*.key
+signing_key.pem
+verify_key.pem
