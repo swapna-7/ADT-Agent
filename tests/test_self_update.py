@@ -70,7 +70,14 @@ def test_should_self_update_skips_unfrozen() -> None:
 
 
 def test_backup_path_exe_and_unix() -> None:
-    assert backup_path(Path(r"C:\Program Files\ADT Agent\adt-agent.exe")).name == "adt-agent.old"
+    # PosixPath treats backslashes as literal characters, so use platform-native paths.
+    if sys.platform == "win32":
+        assert (
+            backup_path(Path(r"C:\Program Files\ADT Agent\adt-agent.exe")).name
+            == "adt-agent.old"
+        )
+    else:
+        assert backup_path(Path("/opt/vizhi-agent/adt-agent.exe")).name == "adt-agent.old"
     assert backup_path(Path("/opt/vizhi-agent/adt-agent")).name == "adt-agent.old"
 
 
