@@ -9,17 +9,19 @@ if [[ -f "$MAC_DIR/.env" ]]; then
   exit 1
 fi
 
-if [[ -z "${VIZHI_API_BASE:-}" ]]; then
-  echo "ERROR: VIZHI_API_BASE not set" >&2
-  exit 1
-fi
-
 if ! command -v python3 &>/dev/null; then
   echo "python3 not found. Install Python 3.10+ from python.org or Homebrew."
   exit 1
 fi
 
-python3 "$REPO_ROOT/generate_api_config.py" "$VIZHI_API_BASE"
+if [[ -n "${VIZHI_API_BASE:-}" ]]; then
+  python3 "$REPO_ROOT/generate_api_config.py" "$VIZHI_API_BASE"
+elif [[ ! -f "$REPO_ROOT/api_config.py" ]]; then
+  echo "ERROR: VIZHI_API_BASE not set and api_config.py missing" >&2
+  exit 1
+else
+  echo "==> Using existing api_config.py"
+fi
 
 python3 -m venv .venv
 # shellcheck disable=SC1091

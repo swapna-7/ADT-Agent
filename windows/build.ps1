@@ -14,18 +14,25 @@ if (Test-Path (Join-Path $repoRoot '.env')) {
     throw "Do not build with .env present at repo root - credentials must not be bundled"
 }
 
+$apiConfig = Join-Path $repoRoot 'api_config.py'
 $apiBase = $env:VIZHI_API_BASE
-if (-not $apiBase) {
-    throw "VIZHI_API_BASE not set. Example: `$env:VIZHI_API_BASE='https://vizhi.example.com'"
+if ($apiBase) {
+    $python = (Get-Command python -ErrorAction SilentlyContinue)
+    if (-not $python) {
+        throw "Python not found in PATH. Install Python 3.10+ and retry."
+    }
+    Write-Host "==> Generating api_config.py"
+    & $python.Path (Join-Path $repoRoot 'generate_api_config.py') $apiBase
+} elseif (-not (Test-Path $apiConfig)) {
+    throw "VIZHI_API_BASE not set and api_config.py missing. Example: `$env:VIZHI_API_BASE='https://vizhi.example.com'"
+} else {
+    Write-Host "==> Using existing api_config.py"
 }
 
 $python = (Get-Command python -ErrorAction SilentlyContinue)
 if (-not $python) {
     throw "Python not found in PATH. Install Python 3.10+ and retry."
 }
-
-Write-Host "==> Generating api_config.py"
-& $python.Path (Join-Path $repoRoot 'generate_api_config.py') $apiBase
 
 Write-Host "==> Installing build dependencies"
 & $python.Path -m pip install --upgrade pip | Out-Null
@@ -47,7 +54,6 @@ Remove-Item -Recurse -Force -ErrorAction SilentlyContinue `
     (Join-Path $windowsDir 'dist'), `
     (Join-Path $windowsDir 'adt-agent.spec')
 
-$apiConfig = Join-Path $repoRoot 'api_config.py'
 if (-not (Test-Path $apiConfig)) {
     throw "api_config.py missing after generate step"
 }

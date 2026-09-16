@@ -101,14 +101,23 @@ jobs:
           python generate_api_config.py "$VIZHI_API_BASE"
       - name: Build Windows
         if: runner.os == 'Windows'
+        env:
+          VIZHI_API_BASE: ${{ secrets.VIZHI_API_BASE }}
+          AGENT_VERIFY_PUBLIC_KEY: ${{ secrets.AGENT_VERIFY_PUBLIC_KEY }}
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\build.ps1
       - name: Build Linux
         if: runner.os == 'Linux'
+        env:
+          VIZHI_API_BASE: ${{ secrets.VIZHI_API_BASE }}
+          AGENT_VERIFY_PUBLIC_KEY: ${{ secrets.AGENT_VERIFY_PUBLIC_KEY }}
         run: |
           chmod +x linux/build.sh
           ./linux/build.sh
       - name: Build macOS
         if: runner.os == 'macOS'
+        env:
+          VIZHI_API_BASE: ${{ secrets.VIZHI_API_BASE }}
+          AGENT_VERIFY_PUBLIC_KEY: ${{ secrets.AGENT_VERIFY_PUBLIC_KEY }}
         run: |
           chmod +x mac/build.sh
           ./mac/build.sh
