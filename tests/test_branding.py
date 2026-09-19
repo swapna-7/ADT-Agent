@@ -42,13 +42,17 @@ def test_branding_wallpaper_windows_calls_powershell(tmp_path: Path):
 
     scripts: list[str] = []
 
-    def fake_ps(script: str, timeout: int = 30) -> None:
-        scripts.append(script)
+    def fake_run_as_user(command, *, timeout=60):
+        from subprocess import CompletedProcess
+
+        scripts.append(str(command[-1]))
+        return CompletedProcess(command, 0, stdout="", stderr="")
 
     with (
         patch("branding.sys.platform", "win32"),
         patch("branding.download_image", return_value=img),
-        patch("branding._ps_run", side_effect=fake_ps),
+        patch("win_session.has_interactive_session", return_value=True),
+        patch("win_session.run_as_interactive_user", side_effect=fake_run_as_user),
     ):
         branding.apply_wallpaper(
             {"wallpaper_url": "https://example.test/w.jpg", "wallpaper_fit": "fill"}

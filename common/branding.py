@@ -14,12 +14,19 @@ from typing import TYPE_CHECKING, Any
 
 from report import fetch_branding, report_branding_result
 
+try:
+    from desktop_alerts import set_notif_branding_cache
+except ImportError:  # pragma: no cover
+    def set_notif_branding_cache(_branding: dict[str, Any] | None) -> None:
+        return
+
 if TYPE_CHECKING:
     from device_session import DeviceSession
 
 log = logging.getLogger(__name__)
 
 BRANDING_CACHE_DIR: Path | None = None
+SESSION_WAIT_TIMEOUT_S = 4 * 60 * 60  # 4 hours
 
 ALLOWED_URL_PREFIXES = [
     "https://vizhi.rcsaware.com/",
@@ -60,11 +67,17 @@ def poll_branding(
 
     branding = resp.get("branding") if isinstance(resp.get("branding"), dict) else {}
     jobs = resp.get("jobs") if isinstance(resp.get("jobs"), list) else []
+    if branding:
+        set_notif_branding_cache(branding)
     if not jobs and not force:
         return
     for job in jobs:
         if isinstance(job, dict):
             apply_branding_job(job, branding or {}, api_base, device_token, session=session)
+
+
+def _surface_skipped(reason: str = "skipped") -> str:
+    return reason
 
 
 def apply_branding_job(
@@ -77,28 +90,139 @@ def apply_branding_job(
 ) -> None:
     job_id = str(job.get("job_id") or "")
     job_type = str(job.get("job_type") or "all")
+    prior_status = str(job.get("status") or "")
     if not job_id:
         return
 
-    reported_received = report_branding_result(
-        api_base, device_token, job_id, "received", session=session
-    )
-    if not reported_received:
-        log.error("Could not POST received for branding job %s", job_id)
+    # Timeout waiting for an interactive user session.
+    if prior_status == "pending_session" and sys.platform == "win32":
+        wait_started = job.get("session_wait_started_at") or job.get("created_at")
+        if wait_started:
+            try:
+                from datetime import datetime, timezone
+
+                started = datetime.fromisoformat(str(wait_started).replace("Z", "+00:00"))
+                age = (datetime.now(timezone.utc) - started).total_seconds()
+                if age > SESSION_WAIT_TIMEOUT_S:
+                    report_branding_result(
+                        api_base,
+                        device_token,
+                        job_id,
+                        "failed",
+                        error_message="no_active_user_session_within_timeout",
+                        wallpaper_status="failed",
+                        session=session,
+                    )
+                    return
+            except Exception:
+                pass
+
+        try:
+            from win_session import has_interactive_session
+        except ImportError:
+            has_interactive_session = lambda: True  # type: ignore[assignment]
+        if not has_interactive_session():
+            # Still waiting — leave as pending_session without re-reporting received.
+            return
+
+    if prior_status != "pending_session":
+        reported_received = report_branding_result(
+            api_base, device_token, job_id, "received", session=session
+        )
+        if not reported_received:
+            log.error("Could not POST received for branding job %s", job_id)
+
+    wallpaper_status: str | None = None
+    lockscreen_status: str | None = None
+    screensaver_status: str | None = None
+    hard_fail = False
+    pending_session = False
+    error_parts: list[str] = []
 
     try:
-        if job_type in ("wallpaper", "all") and branding.get("wallpaper_enabled"):
-            apply_wallpaper(branding)
-        if job_type in ("lockscreen", "all") and branding.get("lockscreen_enabled"):
-            apply_lockscreen(branding)
-        if job_type in ("screensaver", "all") and branding.get("screensaver_enabled"):
-            apply_screensaver(branding)
+        if job_type in ("wallpaper", "all"):
+            if branding.get("wallpaper_enabled"):
+                try:
+                    apply_wallpaper(branding)
+                    wallpaper_status = "completed"
+                except RuntimeError as exc:
+                    if str(exc) == "pending_session":
+                        wallpaper_status = "pending_session"
+                        pending_session = True
+                    else:
+                        wallpaper_status = "failed"
+                        hard_fail = True
+                        error_parts.append(f"wallpaper:{exc}")
+                except Exception as exc:
+                    wallpaper_status = "failed"
+                    hard_fail = True
+                    error_parts.append(f"wallpaper:{exc}")
+            else:
+                wallpaper_status = _surface_skipped("disabled")
 
-        ok = report_branding_result(
-            api_base, device_token, job_id, "completed", session=session
-        )
+        if job_type in ("lockscreen", "all"):
+            if branding.get("lockscreen_enabled"):
+                try:
+                    apply_lockscreen(branding)
+                    lockscreen_status = "completed"
+                except Exception as exc:
+                    lockscreen_status = "failed"
+                    hard_fail = True
+                    error_parts.append(f"lockscreen:{exc}")
+            else:
+                lockscreen_status = _surface_skipped("disabled")
+
+        if job_type in ("screensaver", "all"):
+            if branding.get("screensaver_enabled"):
+                try:
+                    apply_screensaver(branding)
+                    screensaver_status = "completed"
+                except Exception as exc:
+                    screensaver_status = "failed"
+                    hard_fail = True
+                    error_parts.append(f"screensaver:{exc}")
+            else:
+                screensaver_status = _surface_skipped("disabled")
+
+        if pending_session and not hard_fail:
+            report_branding_result(
+                api_base,
+                device_token,
+                job_id,
+                "pending_session",
+                error_message="waiting_for_interactive_session",
+                wallpaper_status=wallpaper_status,
+                lockscreen_status=lockscreen_status,
+                screensaver_status=screensaver_status,
+                session=session,
+            )
+            return
+
+        if hard_fail:
+            ok = report_branding_result(
+                api_base,
+                device_token,
+                job_id,
+                "failed",
+                error_message="; ".join(error_parts)[:500],
+                wallpaper_status=wallpaper_status,
+                lockscreen_status=lockscreen_status,
+                screensaver_status=screensaver_status,
+                session=session,
+            )
+        else:
+            ok = report_branding_result(
+                api_base,
+                device_token,
+                job_id,
+                "completed",
+                wallpaper_status=wallpaper_status,
+                lockscreen_status=lockscreen_status,
+                screensaver_status=screensaver_status,
+                session=session,
+            )
         if not ok:
-            log.error("Could not POST completed for branding job %s", job_id)
+            log.error("Could not POST final status for branding job %s", job_id)
     except Exception as exc:
         ok = report_branding_result(
             api_base,
@@ -106,6 +230,9 @@ def apply_branding_job(
             job_id,
             "failed",
             error_message=str(exc)[:500],
+            wallpaper_status=wallpaper_status,
+            lockscreen_status=lockscreen_status,
+            screensaver_status=screensaver_status,
             session=session,
         )
         if not ok:
@@ -178,7 +305,18 @@ def _apply_wallpaper_windows(branding: dict[str, Any]) -> None:
     url = branding.get("wallpaper_url")
     if not url:
         raise ValueError("wallpaper_url is empty")
+
+    try:
+        from win_session import has_interactive_session, run_as_interactive_user
+    except ImportError:
+        has_interactive_session = lambda: True  # type: ignore[assignment]
+        run_as_interactive_user = None  # type: ignore[assignment]
+
+    if not has_interactive_session():
+        raise RuntimeError("pending_session")
+
     fit = str(branding.get("wallpaper_fit") or "fill")
+    # Download as SYSTEM (may have network / cache dir privileges), then apply as user.
     img_path = download_image(str(url), ".jpg")
     fit_map = {
         "fill": (10, 0),
@@ -201,7 +339,24 @@ public class W {{
 "@
 [W]::SystemParametersInfo(20, 0, '{path_escaped}', 3)
 """
-    _ps_run(ps)
+    if run_as_interactive_user is not None:
+        result = run_as_interactive_user(
+            [
+                "powershell",
+                "-NonInteractive",
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                ps,
+            ],
+            timeout=30,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "wallpaper apply failed").strip()
+            raise RuntimeError(err[:400] or f"wallpaper exit {result.returncode}")
+    else:
+        _ps_run(ps)
 
 
 def _apply_lockscreen_windows(branding: dict[str, Any]) -> None:

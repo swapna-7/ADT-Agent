@@ -59,6 +59,29 @@ def test_alert_delivery_failure_reports_failed():
     assert "toast boom" in (posts[0][2] or "")
 
 
+def test_notify_windows_uses_powershell_aumid_and_balloon_fallback():
+    captured: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(" ".join(str(c) for c in cmd))
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    with patch("desktop_alerts.subprocess.run", side_effect=fake_run):
+        desktop_alerts._notify_windows("Hello", "World", "info")
+
+    assert captured
+    script = captured[0]
+    assert "WindowsPowerShell" in script
+    assert "ShowBalloonTip" in script
+    assert "CreateToastNotifier" in script
+
+
 def test_alert_poll_empty_when_api_returns_none():
     with patch("desktop_alerts.fetch_desktop_alerts", return_value=[]):
         # Must not raise

@@ -330,12 +330,18 @@ def report_alert_result(
     status: str,
     *,
     error_message: str | None = None,
+    os: str | None = None,
+    agent_version: str | None = None,
     timeout: int = 20,
     session: DeviceSession | None = None,
 ) -> bool:
     body: dict[str, Any] = {"status": status}
     if error_message:
         body["error_message"] = error_message[:500]
+    if os:
+        body["os"] = os[:80]
+    if agent_version:
+        body["agent_version"] = agent_version[:40]
     resp = _api_request(
         api_base,
         device_token,
@@ -390,12 +396,21 @@ def report_branding_result(
     status: str,
     *,
     error_message: str | None = None,
+    wallpaper_status: str | None = None,
+    lockscreen_status: str | None = None,
+    screensaver_status: str | None = None,
     timeout: int = 20,
     session: DeviceSession | None = None,
 ) -> bool:
     body: dict[str, Any] = {"status": status}
     if error_message:
         body["error_message"] = error_message[:500]
+    if wallpaper_status is not None:
+        body["wallpaper_status"] = wallpaper_status[:40]
+    if lockscreen_status is not None:
+        body["lockscreen_status"] = lockscreen_status[:40]
+    if screensaver_status is not None:
+        body["screensaver_status"] = screensaver_status[:40]
     resp = _api_request(
         api_base,
         device_token,
