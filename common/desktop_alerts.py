@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
 import sys
 import webbrowser
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from report import fetch_desktop_alerts, report_alert_result
@@ -19,7 +22,6 @@ log = logging.getLogger(__name__)
 
 URL_PATTERN = re.compile(r"^https://[\w\-\.]+\.[a-z]{2,}(/.*)?$", re.I)
 
-# Lightweight cache filled by branding poll (notif sender / logo for toasts).
 _NOTIF_BRANDING: dict[str, Any] = {}
 
 
@@ -49,6 +51,7 @@ def poll_and_show_alerts(
     device_token: str,
     *,
     session: DeviceSession | None = None,
+    data_dir: Path | None = None,
 ) -> None:
     try:
         alerts = fetch_desktop_alerts(api_base, device_token, session=session)
@@ -60,7 +63,7 @@ def poll_and_show_alerts(
     for alert in alerts:
         if not isinstance(alert, dict):
             continue
-        show_alert(alert, api_base, device_token, session=session)
+        show_alert(alert, api_base, device_token, session=session, data_dir=data_dir)
 
 
 def _classify_notify_error(exc: BaseException) -> str:
@@ -79,12 +82,13 @@ def show_alert(
     device_token: str,
     *,
     session: DeviceSession | None = None,
+    data_dir: Path | None = None,
 ) -> None:
     delivery_id = str(alert.get("delivery_id") or "")
     if not delivery_id:
         return
     try:
-        _deliver_notification(alert)
+        _deliver_notification(alert, data_dir=data_dir)
         action_url = str(alert.get("action_url") or "")
         if action_url:
             open_action_url(action_url)
@@ -127,26 +131,166 @@ def _escape_applescript(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _deliver_notification(alert: dict[str, Any]) -> None:
+def _deliver_notification(
+    alert: dict[str, Any],
+    *,
+    data_dir: Path | None = None,
+) -> None:
     severity = str(alert.get("severity") or "info")
     title = str(alert.get("title") or "")
     message = str(alert.get("message") or "")
     if sys.platform == "win32":
-        _notify_windows(title, message, severity)
+        _notify_windows(title, message, severity, data_dir=data_dir)
     elif sys.platform == "darwin":
         _notify_macos(title, message, severity)
     else:
         _notify_linux(title, message, severity)
 
 
-def _notify_windows(title: str, message: str, severity: str) -> None:
-    """Show a user-visible notification on Windows.
+def _windows_active_username() -> str | None:
+    try:
+        result = subprocess.run(
+            ["query", "user"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        for line in result.stdout.splitlines():
+            if ">" in line or "Active" in line:
+                parts = line.split()
+                if parts:
+                    return parts[0].lstrip(">").strip()
+    except Exception:
+        pass
+    return None
 
-    Task Scheduler / non-interactive hosts often get E_ACCESSDENIED from
-    CreateToastNotifier with an unregistered AppId. Prefer PowerShell's own
-    AppUserModelID, then fall back to a NotifyIcon balloon tip.
-    """
-    del severity  # reserved for future icon / urgency mapping
+
+def _time_in_one_minute() -> str:
+    return (datetime.now() + timedelta(minutes=1)).strftime("%H:%M")
+
+
+def _notify_windows_eventlog(title: str, message: str, severity: str) -> None:
+    del severity
+    text = f"{title}: {message}"[:800]
+    subprocess.run(
+        [
+            "eventcreate",
+            "/T",
+            "INFORMATION",
+            "/ID",
+            "900",
+            "/L",
+            "APPLICATION",
+            "/SO",
+            "VIZHIAlert",
+            "/D",
+            text,
+        ],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+
+def _notify_windows_via_ipc(
+    title: str,
+    message: str,
+    data_dir: Path,
+) -> bool:
+    try:
+        from display_ipc import (
+            build_toast_xml,
+            helper_recently_active,
+            wait_for_display_result,
+            write_display_task,
+        )
+    except ImportError:
+        return False
+
+    if not helper_recently_active(data_dir):
+        return False
+
+    task_id = write_display_task(
+        data_dir,
+        {"type": "toast", "xml": build_toast_xml(title, message)},
+    )
+    result = wait_for_display_result(data_dir, task_id, timeout=15)
+    return result is not None and result.get("status") == "ok"
+
+
+def _notify_windows_schtasks_toast(
+    username: str,
+    title: str,
+    message: str,
+) -> bool:
+    safe_title = _escape_xml(title[:80])
+    safe_message = _escape_xml(message[:200])
+    public_dir = os.environ.get("PUBLIC", r"C:\Users\Public")
+    tmp = os.path.join(public_dir, "vizhi_toast.ps1")
+    ps_content = f"""
+[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]
+[void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom,ContentType=WindowsRuntime]
+$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+$xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>{safe_title}</text><text>{safe_message}</text></binding></visual></toast>')
+$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Vizhi ADT').Show($toast)
+"""
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(ps_content)
+
+    task_name = "VIZHIToastOnce"
+    create = subprocess.run(
+        [
+            "schtasks",
+            "/Create",
+            "/F",
+            "/TN",
+            task_name,
+            "/TR",
+            f'powershell -WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File "{tmp}"',
+            "/SC",
+            "ONCE",
+            "/ST",
+            _time_in_one_minute(),
+            "/RU",
+            username,
+            "/RL",
+            "LIMITED",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if create.returncode != 0:
+        return False
+
+    run = subprocess.run(
+        ["schtasks", "/Run", "/TN", task_name],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    subprocess.Popen(
+        [
+            "cmd",
+            "/C",
+            f'timeout /T 30 && schtasks /Delete /F /TN {task_name} && del /F "{tmp}"',
+        ],
+        creationflags=getattr(subprocess, "DETACHED_PROCESS", 0x00000008),
+        close_fds=True,
+    )
+    return run.returncode == 0
+
+
+def _notify_windows(
+    title: str,
+    message: str,
+    severity: str,
+    *,
+    data_dir: Path | None = None,
+) -> None:
+    """Deliver toast in the logged-in user's session (SYSTEM cannot show toasts directly)."""
+    severity_label = severity
 
     try:
         from win_session import has_interactive_session
@@ -158,76 +302,41 @@ def _notify_windows(title: str, message: str, severity: str) -> None:
 
     brand = get_notif_branding_cache()
     sender = str(brand.get("notif_sender_name") or "").strip()
-    # Keep AUMID workaround; prefix sender into title/body instead of custom AppId.
-    display_title = f"{sender}: {title}" if sender and sender.lower() not in title.lower() else title
-    display_message = message
-
-    safe_title = _escape_xml(display_title)
-    safe_message = _escape_xml(display_message)
-    # Escape for single-quoted PowerShell strings in the balloon fallback.
-    ps_title = display_title.replace("'", "''")
-    ps_message = display_message.replace("'", "''")
-
-    # Known AUMID for powershell.exe — registered with Windows, avoids Access Denied
-    # when the agent runs under a logged-on user via Scheduled Task.
-    ps_script = f"""
-$ErrorActionPreference = 'Stop'
-function Show-VizhiToast {{
-  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null
-  [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType=WindowsRuntime] | Out-Null
-  $template = @"
-<toast duration="long">
-  <visual>
-    <binding template="ToastGeneric">
-      <text>{safe_title}</text>
-      <text>{safe_message}</text>
-    </binding>
-  </visual>
-</toast>
-"@
-  $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-  $xml.LoadXml($template)
-  $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-  $appId = '{{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}}\\WindowsPowerShell\\v1.0\\powershell.exe'
-  $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId)
-  $notifier.Show($toast)
-}}
-function Show-VizhiBalloon {{
-  Add-Type -AssemblyName System.Windows.Forms
-  Add-Type -AssemblyName System.Drawing
-  $notify = New-Object System.Windows.Forms.NotifyIcon
-  $notify.Icon = [System.Drawing.SystemIcons]::Information
-  $notify.Visible = $true
-  $notify.BalloonTipTitle = '{ps_title}'
-  $notify.BalloonTipText = '{ps_message}'
-  $notify.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Info
-  $notify.ShowBalloonTip(12000)
-  Start-Sleep -Milliseconds 1500
-  $notify.Dispose()
-}}
-$errs = @()
-try {{ Show-VizhiToast; exit 0 }} catch {{ $errs += $_.Exception.Message }}
-try {{ Show-VizhiBalloon; exit 0 }} catch {{ $errs += $_.Exception.Message }}
-Write-Error ($errs -join ' | ')
-exit 1
-"""
-    result = subprocess.run(
-        [
-            "powershell",
-            "-NonInteractive",
-            "-NoProfile",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            ps_script,
-        ],
-        timeout=20,
-        capture_output=True,
-        text=True,
+    display_title = (
+        f"{sender}: {title}" if sender and sender.lower() not in title.lower() else title
     )
-    if result.returncode != 0:
-        err = (result.stderr or result.stdout or "toast failed").strip()
-        raise RuntimeError(f"Windows toast failed: {err[:300]}")
+    display_message = message
+    title_safe = display_title.replace('"', "'").replace("\n", " ")[:80]
+    message_safe = display_message.replace('"', "'").replace("\n", " ")[:200]
+
+    if data_dir is not None:
+        try:
+            if _notify_windows_via_ipc(display_title, display_message, data_dir):
+                return
+        except Exception as exc:
+            log.debug("IPC toast failed, falling back: %s", exc)
+
+    username = _windows_active_username()
+    if not username:
+        _notify_windows_eventlog(display_title, display_message, severity_label)
+        return
+
+    try:
+        msg = subprocess.run(
+            ["msg", username, f"{title_safe}: {message_safe}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if msg.returncode == 0:
+            return
+    except Exception:
+        pass
+
+    if _notify_windows_schtasks_toast(username, display_title, display_message):
+        return
+
+    _notify_windows_eventlog(display_title, display_message, severity_label)
 
 
 def _notify_macos(title: str, message: str, severity: str) -> None:
@@ -237,8 +346,22 @@ def _notify_macos(title: str, message: str, severity: str) -> None:
         f'with title "Vizhi: {_escape_applescript(title)}" '
         f'sound name "Glass"'
     )
+    try:
+        who = subprocess.run(
+            ["stat", "-f", "%Su", "/dev/console"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        console_user = (who.stdout or "").strip()
+    except Exception:
+        console_user = ""
+
+    if not console_user or console_user.lower() == "root":
+        raise RuntimeError("no_console_user")
+
     result = subprocess.run(
-        ["/usr/bin/osascript", "-e", script],
+        ["sudo", "-u", console_user, "/usr/bin/osascript", "-e", script],
         timeout=10,
         capture_output=True,
         text=True,
@@ -254,20 +377,39 @@ def _get_uid(username: str) -> str:
     return str(pwd.getpwnam(username).pw_uid)
 
 
-def _notify_linux(title: str, message: str, severity: str) -> None:
-    urgency_map = {"info": "normal", "warning": "normal", "critical": "critical"}
-    urgency = urgency_map.get(severity, "normal")
-    target_user = None
+def _linux_active_user() -> str | None:
     try:
         who = subprocess.run(["who"], capture_output=True, text=True, timeout=5)
         users = [
             line.split()[0]
             for line in who.stdout.splitlines()
-            if "(: " in line or "(:" in line or "(tty" in line
+            if "(:0)" in line or "(: " in line or "(:" in line or "(tty" in line
         ]
-        target_user = users[0] if users else None
+        if users:
+            return users[0]
     except Exception:
-        target_user = None
+        pass
+
+    try:
+        result = subprocess.run(
+            ["loginctl", "list-sessions", "--no-legend"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[2] not in {"", "-"}:
+                return parts[2]
+    except Exception:
+        pass
+    return None
+
+
+def _notify_linux(title: str, message: str, severity: str) -> None:
+    urgency_map = {"info": "normal", "warning": "normal", "critical": "critical"}
+    urgency = urgency_map.get(severity, "normal")
+    target_user = _linux_active_user()
 
     if target_user:
         try:

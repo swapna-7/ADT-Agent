@@ -88,8 +88,14 @@ $pyiArgs = @(
     '--hidden-import', 'updates',
     '--hidden-import', 'version',
     '--hidden-import', 'inventory_windows',
+    '--hidden-import', 'display_ipc',
     '--add-data', "$apiConfig;."
 )
+
+$userHelper = Join-Path $windowsDir 'user_helper.ps1'
+if (Test-Path $userHelper) {
+    $pyiArgs += @('--add-data', "$userHelper;.")
+}
 
 $iconFile = Join-Path $windowsDir 'adt-agent.ico'
 if (Test-Path $iconFile) {

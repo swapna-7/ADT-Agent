@@ -58,8 +58,10 @@ REG_PATHS = [
 
 INSTALL_DIR = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "ADT Agent"
 INSTALL_EXE_PATH = INSTALL_DIR / "adt-agent.exe"
+HELPER_INSTALL_PATH = INSTALL_DIR / "user_helper.ps1"
 DATA_DIR = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ADT Agent"
 TASK_NAME = "ADTAgent"
+HELPER_TASK_NAME = "ADTAgentHelper"
 
 AGENT_STOP_COMMAND = "__ADT_AGENT_STOP__"
 
@@ -159,6 +161,60 @@ def stop_other_agent_processes() -> None:
         pass
 
 
+def resolve_user_helper_source() -> Path | None:
+    if is_frozen():
+        meipass = Path(getattr(sys, "_MEIPASS", ""))
+        bundled = meipass / "user_helper.ps1"
+        if bundled.exists():
+            return bundled
+    local = Path(__file__).resolve().parent / "user_helper.ps1"
+    if local.exists():
+        return local
+    return None
+
+
+def copy_user_helper() -> None:
+    src = resolve_user_helper_source()
+    if src is None:
+        logging.warning("user_helper.ps1 not found — display tasks may not run in user session")
+        return
+    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, HELPER_INSTALL_PATH)
+    logging.info("Installed user helper to %s", HELPER_INSTALL_PATH)
+
+
+def register_user_helper_task() -> None:
+    if not HELPER_INSTALL_PATH.exists():
+        logging.warning("Skipping ADTAgentHelper registration — helper script missing")
+        return
+    helper_path = str(HELPER_INSTALL_PATH).replace("'", "''")
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File `"{helper_path}`""
+$helperTrigger = New-ScheduledTaskTrigger -AtLogOn
+$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable
+Register-ScheduledTask -TaskName '{HELPER_TASK_NAME}' -Action $helperAction -Trigger $helperTrigger -Settings $helperSettings -Force | Out-Null
+Start-ScheduledTask -TaskName '{HELPER_TASK_NAME}' -ErrorAction SilentlyContinue
+"""
+    proc = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "Failed to register user helper task").strip()
+        logging.warning("ADTAgentHelper registration failed: %s", detail)
+
+
 def register_scheduled_task() -> None:
     exe = str(INSTALL_EXE_PATH)
     script = f"""
@@ -208,7 +264,9 @@ def install_windows_agent() -> None:
                 time.sleep(1)
         if last_error:
             raise RuntimeError(f"Could not copy agent to {dest}: {last_error}")
+    copy_user_helper()
     register_scheduled_task()
+    register_user_helper_task()
 
 
 def start_installed_agent() -> None:
@@ -831,7 +889,12 @@ def process_pending_commands(
     api_base = session.api_base
     device_token = session.device_token
     try:
-        poll_and_show_alerts(api_base, device_token, session=session)
+        poll_and_show_alerts(
+            api_base,
+            device_token,
+            session=session,
+            data_dir=data_dir,
+        )
     except Exception:
         logging.exception("Desktop alert poll failed")
     if data_dir is not None:
@@ -1026,6 +1089,13 @@ def main() -> None:
     setup_logging(log_file, verbose=verbose, console_log=console_log)
     if is_frozen() and is_running_from_install_dir():
         cleanup_previous_backup(INSTALL_EXE_PATH)
+        try:
+            if not HELPER_INSTALL_PATH.exists():
+                copy_user_helper()
+            if HELPER_INSTALL_PATH.exists():
+                register_user_helper_task()
+        except Exception:
+            logging.exception("User-session helper setup failed")
 
     if not endpoint_id or not is_valid_uuid(endpoint_id):
         raise ValueError(f"Invalid or missing ENDPOINT_ID in {config_file}")
@@ -1063,6 +1133,8 @@ def main() -> None:
         session=session,
         config_path=config_file,
     )
+
+    consecutive_errors = 0
 
     try:
         while True:
@@ -1185,14 +1257,33 @@ def main() -> None:
                     except Exception as exc:
                         logging.exception("Branding poll failed: %s", exc)
 
+                consecutive_errors = 0
                 time.sleep(intervals["command_poll"])
             except SystemExit:
                 raise
             except Exception as exc:
+                consecutive_errors += 1
+                sleep_s = 60 if consecutive_errors < 5 else 300
                 logging.exception(
-                    "Unexpected error in agent loop; continuing in 60s: %s", exc
+                    "Unexpected error in agent loop (#%s); continuing in %ss: %s",
+                    consecutive_errors,
+                    sleep_s,
+                    exc,
                 )
-                time.sleep(60)
+                time.sleep(sleep_s)
+                if consecutive_errors >= 10:
+                    try:
+                        local_config = load_local_config(config_file)
+                        session = DeviceSession(
+                            api_base,
+                            config_file,
+                            AGENT_VERSION,
+                            local_config,
+                        )
+                        consecutive_errors = 0
+                        logging.info("Re-bootstrapped device session after repeated errors")
+                    except Exception as bootstrap_exc:
+                        logging.exception("Re-bootstrap failed: %s", bootstrap_exc)
     except KeyboardInterrupt:
         logging.info("Agent stopped by user")
     except SystemExit:

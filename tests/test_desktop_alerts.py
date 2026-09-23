@@ -1,88 +1,49 @@
-"""Desktop alert delivery — native toast path always reports a result."""
+"""Tests for Windows desktop alert delivery helpers."""
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import desktop_alerts
 
 
-def test_alert_delivery_windows_reports_delivered(tmp_path):
-    posts: list[tuple] = []
-
-    def fake_report(api_base, token, delivery_id, status, **kwargs):
-        posts.append((delivery_id, status, kwargs.get("error_message")))
-        return True
-
-    with (
-        patch("desktop_alerts.fetch_desktop_alerts") as fetch,
-        patch("desktop_alerts.report_alert_result", side_effect=fake_report),
-        patch("desktop_alerts._notify_windows") as notify,
-        patch("desktop_alerts.sys.platform", "win32"),
-    ):
-        fetch.return_value = [
-            {
-                "delivery_id": "del-1",
-                "title": "Hello",
-                "message": "World",
-                "severity": "info",
-            }
-        ]
-        notify.return_value = None
-        desktop_alerts.poll_and_show_alerts("https://example.test", "dt_x")
-
-    assert posts == [("del-1", "delivered", None)]
-    notify.assert_called_once()
+def test_windows_active_username_parses_query_user():
+    with patch("desktop_alerts.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            stdout=(
+                " USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME\n"
+                ">swapn                 console             1  Active      none   3/21/2026 8:00 AM\n"
+            ),
+            returncode=0,
+        )
+        assert desktop_alerts._windows_active_username() == "swapn"
 
 
-def test_alert_delivery_failure_reports_failed():
-    posts: list[tuple] = []
-
-    def fake_report(api_base, token, delivery_id, status, **kwargs):
-        posts.append((delivery_id, status, kwargs.get("error_message")))
-        return True
-
-    with (
-        patch("desktop_alerts.fetch_desktop_alerts") as fetch,
-        patch("desktop_alerts.report_alert_result", side_effect=fake_report),
-        patch("desktop_alerts._notify_windows", side_effect=RuntimeError("toast boom")),
-        patch("desktop_alerts.sys.platform", "win32"),
-    ):
-        fetch.return_value = [
-            {"delivery_id": "del-2", "title": "T", "message": "M", "severity": "critical"}
-        ]
-        desktop_alerts.poll_and_show_alerts("https://example.test", "dt_x")
-
-    assert len(posts) == 1
-    assert posts[0][0] == "del-2"
-    assert posts[0][1] == "failed"
-    assert "toast boom" in (posts[0][2] or "")
+def test_notify_windows_uses_msg_when_available():
+    with patch("win_session.has_interactive_session", return_value=True):
+        with patch("desktop_alerts._windows_active_username", return_value="swapn"):
+            with patch("desktop_alerts.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                desktop_alerts._notify_windows("Title", "Body", "info")
+                assert mock_run.call_args_list[0].args[0][:2] == ["msg", "swapn"]
 
 
-def test_notify_windows_uses_powershell_aumid_and_balloon_fallback():
-    captured: list[str] = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append(" ".join(str(c) for c in cmd))
-
-        class R:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return R()
-
-    with patch("desktop_alerts.subprocess.run", side_effect=fake_run):
-        desktop_alerts._notify_windows("Hello", "World", "info")
-
-    assert captured
-    script = captured[0]
-    assert "WindowsPowerShell" in script
-    assert "ShowBalloonTip" in script
-    assert "CreateToastNotifier" in script
+def test_notify_windows_eventlog_when_no_user():
+    with patch("win_session.has_interactive_session", return_value=True):
+        with patch("desktop_alerts._windows_active_username", return_value=None):
+            with patch("desktop_alerts._notify_windows_eventlog") as mock_log:
+                desktop_alerts._notify_windows("Title", "Body", "info", data_dir=None)
+                mock_log.assert_called_once()
 
 
-def test_alert_poll_empty_when_api_returns_none():
-    with patch("desktop_alerts.fetch_desktop_alerts", return_value=[]):
-        # Must not raise
-        desktop_alerts.poll_and_show_alerts("https://example.test", "dt_x")
+def test_notify_windows_ipc_fast_path(tmp_path: Path):
+    with patch("win_session.has_interactive_session", return_value=True):
+        with patch("desktop_alerts._notify_windows_via_ipc", return_value=True) as mock_ipc:
+            desktop_alerts._notify_windows(
+                "Title",
+                "Body",
+                "info",
+                data_dir=tmp_path,
+            )
+            mock_ipc.assert_called_once()

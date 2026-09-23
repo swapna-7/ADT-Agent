@@ -73,7 +73,14 @@ def poll_branding(
         return
     for job in jobs:
         if isinstance(job, dict):
-            apply_branding_job(job, branding or {}, api_base, device_token, session=session)
+            apply_branding_job(
+                job,
+                branding or {},
+                api_base,
+                device_token,
+                session=session,
+                data_dir=data_dir,
+            )
 
 
 def _surface_skipped(reason: str = "skipped") -> str:
@@ -87,6 +94,7 @@ def apply_branding_job(
     device_token: str,
     *,
     session: DeviceSession | None = None,
+    data_dir: Path | None = None,
 ) -> None:
     job_id = str(job.get("job_id") or "")
     job_type = str(job.get("job_type") or "all")
@@ -143,7 +151,7 @@ def apply_branding_job(
         if job_type in ("wallpaper", "all"):
             if branding.get("wallpaper_enabled"):
                 try:
-                    apply_wallpaper(branding)
+                    apply_wallpaper(branding, data_dir=data_dir)
                     wallpaper_status = "completed"
                 except RuntimeError as exc:
                     if str(exc) == "pending_session":
@@ -175,7 +183,7 @@ def apply_branding_job(
         if job_type in ("screensaver", "all"):
             if branding.get("screensaver_enabled"):
                 try:
-                    apply_screensaver(branding)
+                    apply_screensaver(branding, data_dir=data_dir)
                     screensaver_status = "completed"
                 except Exception as exc:
                     screensaver_status = "failed"
@@ -301,22 +309,30 @@ def _ps_run(script: str, timeout: int = 30) -> None:
         raise RuntimeError(err[:400])
 
 
-def _apply_wallpaper_windows(branding: dict[str, Any]) -> None:
+def _resolve_data_dir(data_dir: Path | None) -> Path:
+    if data_dir is not None:
+        return data_dir
+    if BRANDING_CACHE_DIR is not None:
+        return BRANDING_CACHE_DIR.parent
+    raise ValueError("data_dir is required for Windows display IPC")
+
+
+def _apply_wallpaper_windows(branding: dict[str, Any], *, data_dir: Path | None) -> None:
     url = branding.get("wallpaper_url")
     if not url:
         raise ValueError("wallpaper_url is empty")
 
     try:
-        from win_session import has_interactive_session, run_as_interactive_user
+        from win_session import has_interactive_session
     except ImportError:
         has_interactive_session = lambda: True  # type: ignore[assignment]
-        run_as_interactive_user = None  # type: ignore[assignment]
 
     if not has_interactive_session():
         raise RuntimeError("pending_session")
 
+    from display_ipc import wait_for_display_result, write_display_task
+
     fit = str(branding.get("wallpaper_fit") or "fill")
-    # Download as SYSTEM (may have network / cache dir privileges), then apply as user.
     img_path = download_image(str(url), ".jpg")
     fit_map = {
         "fill": (10, 0),
@@ -326,37 +342,21 @@ def _apply_wallpaper_windows(branding: dict[str, Any]) -> None:
         "center": (0, 0),
     }
     style, tile = fit_map.get(fit, (10, 0))
-    path_escaped = str(img_path).replace("'", "''")
-    ps = f"""
-Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name WallpaperStyle -Value {style}
-Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name TileWallpaper -Value {tile}
-Add-Type @"
-using System.Runtime.InteropServices;
-public class W {{
-  [DllImport("user32.dll")]
-  public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
-}}
-"@
-[W]::SystemParametersInfo(20, 0, '{path_escaped}', 3)
-"""
-    if run_as_interactive_user is not None:
-        result = run_as_interactive_user(
-            [
-                "powershell",
-                "-NonInteractive",
-                "-NoProfile",
-                "-WindowStyle",
-                "Hidden",
-                "-Command",
-                ps,
-            ],
-            timeout=30,
-        )
-        if result.returncode != 0:
-            err = (result.stderr or result.stdout or "wallpaper apply failed").strip()
-            raise RuntimeError(err[:400] or f"wallpaper exit {result.returncode}")
-    else:
-        _ps_run(ps)
+    resolved_dir = _resolve_data_dir(data_dir)
+    task_id = write_display_task(
+        resolved_dir,
+        {
+            "type": "wallpaper",
+            "path": str(img_path),
+            "fit_code": str(style),
+            "tile_code": str(tile),
+        },
+    )
+    result = wait_for_display_result(resolved_dir, task_id, timeout=30)
+    if result is None:
+        raise RuntimeError("pending_session")
+    if result.get("status") == "error":
+        raise RuntimeError(str(result.get("error") or "wallpaper failed"))
 
 
 def _apply_lockscreen_windows(branding: dict[str, Any]) -> None:
@@ -378,17 +378,30 @@ Set-ItemProperty -Path $path -Name NoChangingLockScreen -Value 1
     _ps_run(ps)
 
 
-def _apply_screensaver_windows(branding: dict[str, Any]) -> None:
+def _apply_screensaver_windows(branding: dict[str, Any], *, data_dir: Path | None) -> None:
     timeout = int(branding.get("screensaver_timeout_s") or 600)
     timeout = max(60, min(timeout, 3600))
-    ps = f"""
-$p = 'HKCU:\\Control Panel\\Desktop'
-Set-ItemProperty -Path $p -Name ScreenSaveActive -Value 1
-Set-ItemProperty -Path $p -Name ScreenSaveTimeOut -Value {timeout}
-Set-ItemProperty -Path $p -Name SCRNSAVE.EXE -Value "$env:SystemRoot\\System32\\Scrnsave.scr"
-Set-ItemProperty -Path $p -Name ScreenSaverIsSecure -Value 1
-"""
-    _ps_run(ps, timeout=15)
+
+    try:
+        from win_session import has_interactive_session
+    except ImportError:
+        has_interactive_session = lambda: True  # type: ignore[assignment]
+
+    if not has_interactive_session():
+        raise RuntimeError("pending_session")
+
+    from display_ipc import wait_for_display_result, write_display_task
+
+    resolved_dir = _resolve_data_dir(data_dir)
+    task_id = write_display_task(
+        resolved_dir,
+        {"type": "screensaver", "timeout_s": timeout},
+    )
+    result = wait_for_display_result(resolved_dir, task_id, timeout=30)
+    if result is None:
+        raise RuntimeError("pending_session")
+    if result.get("status") == "error":
+        raise RuntimeError(str(result.get("error") or "screensaver failed"))
 
 
 def _apply_wallpaper_macos(branding: dict[str, Any]) -> None:
@@ -589,9 +602,13 @@ def _apply_screensaver_linux(branding: dict[str, Any]) -> None:
     )
 
 
-def apply_wallpaper(branding: dict[str, Any]) -> None:
+def apply_wallpaper(
+    branding: dict[str, Any],
+    *,
+    data_dir: Path | None = None,
+) -> None:
     if sys.platform == "win32":
-        _apply_wallpaper_windows(branding)
+        _apply_wallpaper_windows(branding, data_dir=data_dir)
     elif sys.platform == "darwin":
         _apply_wallpaper_macos(branding)
     else:
@@ -607,9 +624,13 @@ def apply_lockscreen(branding: dict[str, Any]) -> None:
         _apply_lockscreen_linux(branding)
 
 
-def apply_screensaver(branding: dict[str, Any]) -> None:
+def apply_screensaver(
+    branding: dict[str, Any],
+    *,
+    data_dir: Path | None = None,
+) -> None:
     if sys.platform == "win32":
-        _apply_screensaver_windows(branding)
+        _apply_screensaver_windows(branding, data_dir=data_dir)
     elif sys.platform == "darwin":
         _apply_screensaver_macos(branding)
     else:

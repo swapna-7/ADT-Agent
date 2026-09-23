@@ -66,40 +66,45 @@ LINUX_SERVICE_PACKAGES = frozenset({"nginx", "postgresql", "mysql-server", "apac
 
 
 def assign_category(row: dict[str, Any]) -> str:
-    source = str(row.get("source") or row.get("package_type") or "").lower()
+    source = str(row.get("source") or "").lower().strip()
+    package_type = str(row.get("package_type") or "").lower().strip()
+    kind = source or package_type
     canonical = str(row.get("canonical_id") or row.get("update_uid") or row.get("package_name") or "")
+
+    # Persistence / package-type overrides win even if a prior bad category is set.
+    if kind in {"startup", "scheduled_task"} or package_type in {"startup", "scheduled_task"}:
+        return "SYSTEM_SERVICE"
+    if kind == "service" or package_type == "service":
+        return "SYSTEM_SERVICE"
+    if kind == "kb" or package_type == "kb":
+        return "OS_UPDATE"
+
     category = row.get("category")
     if isinstance(category, str) and category in CATEGORIES:
         return category
 
-    if source in {"npm_global", "pip_global"}:
+    if kind in {"npm_global", "pip_global"}:
         return "DEVELOPER_TOOL"
 
-    if source == "service":
-        return "SYSTEM_SERVICE"
-
-    if source == "kb":
-        return "OS_UPDATE"
-
-    if source == "appx":
+    if kind == "appx":
         return "APPLICATION"
 
-    if source == "registry_app":
+    if kind == "registry_app":
         mapped = REGISTRY_CATEGORY_BY_CANONICAL.get(canonical)
         return mapped or "APPLICATION"
 
-    if source == "windows_update":
+    if kind == "windows_update":
         categories = row.get("categories") or row.get("wua_categories") or []
         if isinstance(categories, list):
             cats = [str(c).lower() for c in categories]
             if any("driver" in c for c in cats):
                 return "DRIVER"
-        severity = str(row.get("MsrcSeverity") or row.get("msrc_severity") or "").lower()
         return "OS_UPDATE"
 
-    if source in {"apt", "dnf"}:
+    if kind in {"apt", "dnf"}:
         pkg = str(row.get("package_name") or row.get("software_name") or "").lower()
-        repo = str(row.get("repo") or row.get("evidence", {}).get("repo") or "").lower()
+        evidence = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+        repo = str(row.get("repo") or evidence.get("repo") or "").lower()
         if "security" in repo or row.get("is_security"):
             return "OS_UPDATE"
         if any(pkg.startswith(p) for p in LINUX_OS_PACKAGES):
@@ -108,7 +113,7 @@ def assign_category(row: dict[str, Any]) -> str:
             return "SYSTEM_SERVICE"
         return "APPLICATION"
 
-    if source in {"snap", "flatpak"}:
+    if kind in {"snap", "flatpak"}:
         return "APPLICATION"
 
     return "APPLICATION"

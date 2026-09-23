@@ -7,7 +7,9 @@ if (-not $isAdmin) {
 }
 
 Stop-ScheduledTask -TaskName 'ADTAgent' -ErrorAction SilentlyContinue
+Stop-ScheduledTask -TaskName 'ADTAgentHelper' -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName 'ADTAgent' -Confirm:$false -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName 'ADTAgentHelper' -Confirm:$false -ErrorAction SilentlyContinue
 
 Remove-Item 'C:\Program Files\ADT Agent' -Recurse -Force -ErrorAction SilentlyContinue
 

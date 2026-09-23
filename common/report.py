@@ -251,6 +251,12 @@ def report_telemetry(
         body["inventory"] = inventory
     if os_facts is not None:
         body["os_facts"] = os_facts
+    if session is not None and session.agent_version:
+        body["agent_version"] = session.agent_version[:40]
+    else:
+        from version import AGENT_VERSION
+
+        body["agent_version"] = AGENT_VERSION[:40]
     resp = _api_request(
         api_base,
         device_token,

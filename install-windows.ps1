@@ -25,6 +25,12 @@ $installExe = Join-Path $installDir 'adt-agent.exe'
 New-Item -ItemType Directory -Force -Path $installDir, $dataDir | Out-Null
 Copy-Item -Force $BinaryPath $installExe
 
+$helperSrc = Join-Path $repoRoot 'windows\user_helper.ps1'
+$helperDest = Join-Path $installDir 'user_helper.ps1'
+if (Test-Path $helperSrc) {
+    Copy-Item -Force $helperSrc $helperDest
+}
+
 # Restrict install dir to SYSTEM and Administrators.
 $acl = Get-Acl $installDir
 $acl.SetAccessRuleProtection($true, $false)
@@ -59,6 +65,10 @@ Register-ScheduledTask `
     -Settings $settings `
     -Principal $principal `
     -Force | Out-Null
+
+if (Test-Path $helperDest) {
+    & (Join-Path $repoRoot 'windows\register-user-helper.ps1') -HelperPath $helperDest
+}
 
 Write-Host ""
 Write-Host "==> Interactive enrollment (enter organisation code when prompted)"

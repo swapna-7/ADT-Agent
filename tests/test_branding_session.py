@@ -13,7 +13,7 @@ def test_run_as_interactive_user_is_importable():
     assert callable(win_session.run_as_interactive_user)
 
 
-def test_wallpaper_no_session_raises_pending_session():
+def test_wallpaper_no_session_raises_pending_session(tmp_path):
     with (
         patch("sys.platform", "win32"),
         patch("branding.has_interactive_session", create=True),
@@ -22,7 +22,8 @@ def test_wallpaper_no_session_raises_pending_session():
     ):
         try:
             branding._apply_wallpaper_windows(
-                {"wallpaper_url": "https://vizhi.rcsaware.com/x.jpg", "wallpaper_fit": "fill"}
+                {"wallpaper_url": "https://vizhi.rcsaware.com/x.jpg", "wallpaper_fit": "fill"},
+                data_dir=tmp_path,
             )
             raised = False
         except RuntimeError as exc:

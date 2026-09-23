@@ -1,6 +1,25 @@
 # ADT Agent
 
-Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.0).
+Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.4).
+
+## Windows user-session display helper
+
+The SYSTEM agent (`ADTAgent`) cannot show toasts or set wallpaper directly. A second process runs at user logon:
+
+- Script: [`windows/user_helper.ps1`](windows/user_helper.ps1)
+- Task: `ADTAgentHelper` (AtLogOn, logged-in user)
+- IPC files in `C:\ProgramData\ADT Agent\`: `pending_display.json`, `display_results.json`
+
+After upgrading agents on a machine, verify in Admin PowerShell:
+
+```powershell
+Stop-ScheduledTask -TaskName ADTAgent,ADTAgentHelper -EA SilentlyContinue
+Get-Process adt-agent -EA SilentlyContinue | Stop-Process -Force
+# Replace adt-agent.exe with the latest release binary, then:
+Start-ScheduledTask -TaskName ADTAgentHelper
+Start-ScheduledTask -TaskName ADTAgent
+Get-Content "C:\ProgramData\ADT Agent\agent.log" -Tail 20
+```
 
 ## Layout
 

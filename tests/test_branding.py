@@ -34,33 +34,37 @@ def test_branding_job_always_posts_result_on_failure(tmp_path: Path):
     assert posts[-1] == "failed"
 
 
-def test_branding_wallpaper_windows_calls_powershell(tmp_path: Path):
+def test_branding_wallpaper_windows_uses_display_ipc(tmp_path: Path):
     branding.BRANDING_CACHE_DIR = tmp_path / "branding"
     branding.BRANDING_CACHE_DIR.mkdir(parents=True)
     img = branding.BRANDING_CACHE_DIR / "abc.jpg"
     img.write_bytes(b"fake-image")
 
-    scripts: list[str] = []
+    tasks: list[dict] = []
 
-    def fake_run_as_user(command, *, timeout=60):
-        from subprocess import CompletedProcess
-
-        scripts.append(str(command[-1]))
-        return CompletedProcess(command, 0, stdout="", stderr="")
+    def fake_write(_data_dir, task):
+        tasks.append(task)
+        return "task-1"
 
     with (
         patch("branding.sys.platform", "win32"),
         patch("branding.download_image", return_value=img),
         patch("win_session.has_interactive_session", return_value=True),
-        patch("win_session.run_as_interactive_user", side_effect=fake_run_as_user),
+        patch("display_ipc.write_display_task", side_effect=fake_write),
+        patch(
+            "display_ipc.wait_for_display_result",
+            return_value={"id": "task-1", "status": "ok"},
+        ),
     ):
         branding.apply_wallpaper(
-            {"wallpaper_url": "https://example.test/w.jpg", "wallpaper_fit": "fill"}
+            {"wallpaper_url": "https://example.test/w.jpg", "wallpaper_fit": "fill"},
+            data_dir=tmp_path,
         )
 
-    assert scripts
-    assert "SystemParametersInfo" in scripts[0]
-    assert str(img) in scripts[0] or str(img).replace("\\", "\\\\") in scripts[0] or True
+    assert len(tasks) == 1
+    assert tasks[0]["type"] == "wallpaper"
+    assert tasks[0]["path"] == str(img)
+    assert tasks[0]["fit_code"] == "10"
 
 
 def test_download_image_http_error(tmp_path: Path):
