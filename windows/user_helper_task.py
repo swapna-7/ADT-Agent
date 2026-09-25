@@ -109,6 +109,64 @@ def ensure_helper_script_present() -> Path | None:
     return HELPER_INSTALL_PATH
 
 
+def is_helper_running() -> bool:
+    """True when a powershell process is running user_helper.ps1."""
+    try:
+        import psutil
+
+        target = "user_helper.ps1"
+        for proc in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                cmdline = proc.info.get("cmdline") or []
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            joined = " ".join(str(part) for part in cmdline).lower()
+            if target in joined:
+                return True
+    except Exception as exc:
+        log.debug("is_helper_running probe failed: %s", exc)
+    return False
+
+
+def start_helper_task(*, task_name: str = HELPER_TASK_NAME) -> bool:
+    """Ask Task Scheduler to run ADTAgentHelper in the interactive user session."""
+    try:
+        proc = subprocess.run(
+            ["schtasks", "/Run", "/TN", task_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception as exc:
+        _debug_log(
+            "B",
+            "user_helper_task.py:start_helper_task",
+            "schtasks run exception",
+            {"error": str(exc)},
+        )
+        log.warning("Could not start ADTAgentHelper via schtasks: %s", exc)
+        return False
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "schtasks /Run failed").strip()
+        _debug_log(
+            "B",
+            "user_helper_task.py:start_helper_task",
+            "schtasks run failed",
+            {"returncode": proc.returncode, "detail": detail[:500]},
+        )
+        log.warning("schtasks /Run ADTAgentHelper failed: %s", detail)
+        return False
+    _debug_log(
+        "C",
+        "user_helper_task.py:start_helper_task",
+        "schtasks run accepted",
+        {"task": task_name},
+    )
+    log.info("Started ADTAgentHelper via schtasks")
+    return True
+
+
 def get_registered_task_principal(task_name: str = HELPER_TASK_NAME) -> str | None:
     script = f"(Get-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue).Principal.UserId"
     try:
@@ -139,11 +197,11 @@ def register_helper_task(user: str, *, helper_path: Path | None = None) -> bool:
     script = f"""
 $ErrorActionPreference = 'Stop'
 $helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File `"{helper_path_ps}`""
-$helperTrigger = New-ScheduledTaskTrigger -AtLogOn
-$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable
+$helperTrigger = New-ScheduledTaskTrigger -AtLogOn -User '{safe_user}'
+$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable -MultipleInstances StopExisting
 $principal = New-ScheduledTaskPrincipal -UserId '{safe_user}' -LogonType Interactive
 Register-ScheduledTask -TaskName '{HELPER_TASK_NAME}' -Action $helperAction -Trigger $helperTrigger -Settings $helperSettings -Principal $principal -Force | Out-Null
-Start-ScheduledTask -TaskName '{HELPER_TASK_NAME}' -ErrorAction SilentlyContinue
+schtasks /Run /TN '{HELPER_TASK_NAME}' | Out-Null
 """
     try:
         proc = subprocess.run(
@@ -188,6 +246,7 @@ Start-ScheduledTask -TaskName '{HELPER_TASK_NAME}' -ErrorAction SilentlyContinue
         {"user": user},
     )
     log.info("Registered ADTAgentHelper for user: %s", user)
+    start_helper_task()
     return True
 
 
@@ -222,12 +281,21 @@ def ensure_helper_task_registered(
     )
 
     if current_principal and _principal_matches(current_principal, active_user):
+        if is_helper_running():
+            _debug_log(
+                "D",
+                "user_helper_task.py:ensure_helper_task_registered",
+                "already registered — helper running",
+                {"user": active_user},
+            )
+            return
         _debug_log(
             "D",
             "user_helper_task.py:ensure_helper_task_registered",
-            "already registered — no-op",
+            "registered but helper not running — starting",
             {"user": active_user},
         )
+        start_helper_task()
         return
 
     log.info("Registering ADTAgentHelper for user: %s", active_user)

@@ -10,7 +10,7 @@ The SYSTEM agent (`ADTAgent`) cannot show toasts or set wallpaper directly. A se
 - Task: `ADTAgentHelper` (AtLogOn, logged-in user)
 - IPC files in `C:\ProgramData\ADT Agent\`: `pending_display.json`, `display_results.json`
 
-From **2.1.8**, the SYSTEM agent registers `ADTAgentHelper` at startup and on each metrics cycle when an interactive user is logged in (WTS username + explicit principal — avoids `0x80070534`). Pre-2.1.8 endpoints need a one-time manual registration while logged in at the console (see below).
+From **2.1.9**, the SYSTEM agent registers and starts `ADTAgentHelper` via `schtasks /Run` (AtLogOn + explicit user principal). Pre-2.1.9 endpoints may need a one-time manual registration while logged in at the console (see below).
 
 After upgrading agents on a machine, verify in Admin PowerShell:
 
@@ -18,7 +18,7 @@ After upgrading agents on a machine, verify in Admin PowerShell:
 $install = "C:\Program Files\ADT Agent\adt-agent.exe"
 $staging = "C:\ProgramData\ADT Agent\update\adt-agent.exe"
 $backup  = "C:\Program Files\ADT Agent\adt-agent.old"
-$version = "2.1.8"   # GitHub release tag without v
+$version = "2.1.9"   # GitHub release tag without v
 
 Disable-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
 Disable-ScheduledTask -TaskName ADTAgentHelper -ErrorAction SilentlyContinue
@@ -46,11 +46,11 @@ Start-ScheduledTask -TaskName ADTAgent   # one process only after manual binary 
 $helperPath = "C:\Program Files\ADT Agent\user_helper.ps1"
 $user = (Get-CimInstance Win32_ComputerSystem).UserName
 $helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File `"$helperPath`""
-$helperTrigger = New-ScheduledTaskTrigger -AtLogOn
-$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable
+$helperTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable -MultipleInstances StopExisting
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive
 Register-ScheduledTask -TaskName ADTAgentHelper -Action $helperAction -Trigger $helperTrigger -Settings $helperSettings -Principal $principal -Force
-Start-ScheduledTask -TaskName ADTAgentHelper
+schtasks /Run /TN ADTAgentHelper
 Get-Content "C:\ProgramData\ADT Agent\agent.log" -Tail 20
 ```
 

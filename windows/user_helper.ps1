@@ -12,7 +12,15 @@ $LogFile = Join-Path $DataDir 'user_helper.log'
 function Write-HelperLog {
     param([string]$Message)
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $Message"
-    Add-Content -Path $LogFile -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+    try {
+        if (-not (Test-Path $DataDir)) {
+            New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+        }
+        Add-Content -Path $LogFile -Value $line -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        $fallback = Join-Path $env:TEMP 'adt-agent-user_helper.log'
+        Add-Content -Path $fallback -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+    }
 }
 
 Write-HelperLog 'ADTAgentHelper started (pid=' + $PID + ')'

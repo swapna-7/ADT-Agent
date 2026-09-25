@@ -49,14 +49,36 @@ def test_ensure_helper_task_registered_reregisters_on_user_change() -> None:
     register.assert_called_once_with("DESKTOP\\newuser")
 
 
-def test_ensure_helper_task_registered_is_idempotent() -> None:
+def test_ensure_helper_task_registered_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     register = MagicMock(return_value=True)
+    start = MagicMock(return_value=True)
+    monkeypatch.setattr(uht, "is_helper_running", lambda: True)
+    monkeypatch.setattr(uht, "start_helper_task", start)
     uht.ensure_helper_task_registered(
         get_user=lambda: "DESKTOP\\swapna",
         get_principal=lambda: "DESKTOP\\swapna",
         register=register,
     )
     register.assert_not_called()
+    start.assert_not_called()
+
+
+def test_ensure_helper_task_registered_starts_when_not_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    register = MagicMock(return_value=True)
+    start = MagicMock(return_value=True)
+    monkeypatch.setattr(uht, "is_helper_running", lambda: False)
+    monkeypatch.setattr(uht, "start_helper_task", start)
+    uht.ensure_helper_task_registered(
+        get_user=lambda: "DESKTOP\\swapna",
+        get_principal=lambda: "DESKTOP\\swapna",
+        register=register,
+    )
+    register.assert_not_called()
+    start.assert_called_once()
 
 
 def test_register_helper_task_failure_does_not_crash_main_loop() -> None:
