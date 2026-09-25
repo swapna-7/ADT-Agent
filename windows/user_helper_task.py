@@ -36,6 +36,15 @@ def _is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def build_helper_task_arguments(helper_path: Path | str) -> str:
+    """Build Task Scheduler args that survive spaces in ProgramData\\ADT Agent\\."""
+    quoted = str(helper_path).replace("'", "''")
+    return (
+        "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden "
+        f"-Command \"& '{quoted}'\""
+    )
+
+
 def _resolve_user_helper_source() -> Path | None:
     if _is_frozen():
         meipass = Path(getattr(sys, "_MEIPASS", ""))
@@ -194,10 +203,10 @@ def register_helper_task(user: str, *, helper_path: Path | None = None) -> bool:
         return False
 
     safe_user = user.replace("'", "''")
-    helper_path_ps = str(path).replace("'", "''")
+    ps_arg = build_helper_task_arguments(path).replace("'", "''")
     script = f"""
 $ErrorActionPreference = 'Stop'
-$helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File `"{helper_path_ps}`""
+$helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '{ps_arg}'
 $helperTrigger = New-ScheduledTaskTrigger -AtLogOn -User '{safe_user}'
 $helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId '{safe_user}' -LogonType Interactive

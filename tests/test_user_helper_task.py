@@ -150,7 +150,16 @@ def test_register_helper_task_uses_schtasks_and_user_logon_trigger(
     assert "-AtLogOn -User 'DESKTOP\\swapna'" in script
     assert "schtasks /Run /TN 'ADTAgentHelper'" in script
     assert "MultipleInstances IgnoreNew" in script
+    assert "-Command" in script
+    assert "-File" not in script
     assert "Start-ScheduledTask" not in script
+
+
+def test_build_helper_task_arguments_quotes_spaces() -> None:
+    args = uht.build_helper_task_arguments(r"C:\ProgramData\ADT Agent\user_helper.ps1")
+    assert "-Command" in args
+    assert "ADT Agent" in args
+    assert "-File" not in args
 
 
 def test_debug_log_writes_ndjson(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

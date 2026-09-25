@@ -9,9 +9,11 @@ if (-not (Test-Path $HelperPath)) {
     throw "user_helper.ps1 not found at: $HelperPath"
 }
 
+# -File breaks when the path contains spaces (Task Scheduler splits on spaces). Use -Command.
+$psArg = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""& '$($HelperPath -replace '''','''''')'"""
 $helperAction = New-ScheduledTaskAction `
     -Execute 'powershell.exe' `
-    -Argument "-WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File `"$HelperPath`""
+    -Argument $psArg
 
 # AtLogOn tasks registered by the SYSTEM agent need an explicit interactive user.
 $user = (Get-CimInstance -ClassName Win32_ComputerSystem).UserName

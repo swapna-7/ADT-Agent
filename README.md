@@ -1,6 +1,6 @@
 # ADT Agent
 
-Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.10).
+Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.11).
 
 ## Windows user-session display helper
 
@@ -20,7 +20,7 @@ After upgrading agents on a machine, verify in Admin PowerShell:
 $install = "C:\Program Files\ADT Agent\adt-agent.exe"
 $staging = "C:\ProgramData\ADT Agent\update\adt-agent.exe"
 $backup  = "C:\Program Files\ADT Agent\adt-agent.old"
-$version = "2.1.10"   # GitHub release tag without v
+$version = "2.1.11"   # GitHub release tag without v
 
 Disable-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
 Disable-ScheduledTask -TaskName ADTAgentHelper -ErrorAction SilentlyContinue
@@ -47,7 +47,8 @@ Start-ScheduledTask -TaskName ADTAgent   # one process only after manual binary 
 # ADTAgentHelper (portal toasts/wallpaper) — register while a user is logged in:
 $helperPath = "C:\ProgramData\ADT Agent\user_helper.ps1"
 $user = (Get-CimInstance Win32_ComputerSystem).UserName
-$helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File `"$helperPath`""
+$psArg = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""& '$helperPath'"""
+$helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $psArg
 $helperTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 $helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive
