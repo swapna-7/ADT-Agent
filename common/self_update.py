@@ -261,6 +261,7 @@ def download_and_verify(
                 time.sleep(DOWNLOAD_RETRY_SLEEP)
             continue
 
+        actual = digest.hexdigest().lower()
         if actual != expected:
             log.warning(
                 "SHA-256 mismatch on attempt %s: expected %s got %s",

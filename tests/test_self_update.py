@@ -12,6 +12,7 @@ from self_update import (  # noqa: E402
     auto_update_enabled,
     backup_path,
     cleanup_previous_backup,
+    download_and_verify,
     is_newer,
     parse_semver,
     read_auto_update_flag,
@@ -103,6 +104,34 @@ def test_replace_installed_binary_does_not_touch_env(tmp_path: Path) -> None:
     assert backup.read_bytes() == b"old-binary"
     cleanup_previous_backup(installed)
     assert not backup.exists()
+
+
+def test_download_and_verify_compares_sha256(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = b"vizhi-agent-update-payload"
+    expected = hashlib.sha256(payload).hexdigest()
+
+    class FakeResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int = 0):
+            yield payload
+
+    monkeypatch.setattr("self_update.requests.get", lambda *args, **kwargs: FakeResponse())
+
+    dest = tmp_path / "staging" / "adt-agent.exe"
+    assert download_and_verify(
+        "https://vizhi.rcsaware.com/api/agent/update/download?platform=windows",
+        dest,
+        expected,
+        device_token="test-token",
+    )
+    assert dest.read_bytes() == payload
 
 
 def test_sha256_of_replaced_file(tmp_path: Path) -> None:
