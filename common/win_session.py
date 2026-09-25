@@ -84,6 +84,39 @@ def has_interactive_session() -> bool:
         return False
 
 
+def get_active_interactive_user() -> str | None:
+    """Return DOMAIN\\user for the active console session, or None if none."""
+    if sys.platform != "win32":
+        return None
+    try:
+        if _active_session_id() is None:
+            return None
+    except Exception as exc:
+        log.warning("get_active_interactive_user session probe failed: %s", exc)
+        return None
+
+    try:
+        proc = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance Win32_ComputerSystem).UserName",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        user = (proc.stdout or "").strip()
+        if proc.returncode != 0 or not user:
+            return None
+        return user
+    except Exception as exc:
+        log.warning("get_active_interactive_user failed: %s", exc)
+        return None
+
+
 def _active_session_id() -> int | None:
     wts = ctypes.WinDLL("wtsapi32")
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)

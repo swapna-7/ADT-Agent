@@ -22,11 +22,19 @@ $helperSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -StartWhenAvailable
 
+# AtLogOn tasks registered by the SYSTEM agent need an explicit interactive user.
+$user = (Get-CimInstance -ClassName Win32_ComputerSystem).UserName
+if (-not $user) {
+    throw 'No interactive user is logged in — log on at the console, then re-run this script.'
+}
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive
+
 Register-ScheduledTask `
     -TaskName 'ADTAgentHelper' `
     -Action $helperAction `
     -Trigger $helperTrigger `
     -Settings $helperSettings `
+    -Principal $principal `
     -Force | Out-Null
 
 Start-ScheduledTask -TaskName 'ADTAgentHelper' -ErrorAction SilentlyContinue

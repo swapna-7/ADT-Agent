@@ -89,6 +89,7 @@ $pyiArgs = @(
     '--hidden-import', 'version',
     '--hidden-import', 'inventory_windows',
     '--hidden-import', 'display_ipc',
+    '--hidden-import', 'user_helper_task',
     '--add-data', "$apiConfig;."
 )
 

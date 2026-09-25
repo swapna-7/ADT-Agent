@@ -141,9 +141,10 @@ def is_admin() -> bool:
         return False
 
 
-def stop_other_agent_processes() -> None:
-    stop_scheduled_task()
+def cleanup_stale_agent_processes() -> None:
+    """Terminate duplicate adt-agent.exe PIDs after a self-update swap (does not stop the task)."""
     self_pid = os.getpid()
+    killed: list[int] = []
     try:
         for proc in psutil.process_iter(["pid", "name", "exe"]):
             try:
@@ -155,64 +156,29 @@ def stop_other_agent_processes() -> None:
                     exe and Path(exe).resolve() == INSTALL_EXE_PATH.resolve()
                 ):
                     proc.kill()
+                    killed.append(int(proc.info["pid"]))
             except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError):
                 continue
-    except Exception:
-        pass
-
-
-def resolve_user_helper_source() -> Path | None:
-    if is_frozen():
-        meipass = Path(getattr(sys, "_MEIPASS", ""))
-        bundled = meipass / "user_helper.ps1"
-        if bundled.exists():
-            return bundled
-    local = Path(__file__).resolve().parent / "user_helper.ps1"
-    if local.exists():
-        return local
-    return None
-
-
-def copy_user_helper() -> None:
-    src = resolve_user_helper_source()
-    if src is None:
-        logging.warning("user_helper.ps1 not found — display tasks may not run in user session")
+    except Exception as exc:
+        logging.warning("Stale agent process cleanup failed: %s", exc)
         return
-    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, HELPER_INSTALL_PATH)
-    logging.info("Installed user helper to %s", HELPER_INSTALL_PATH)
+    if killed:
+        logging.info("Cleaned up stale agent process(es): %s", killed)
 
 
-def register_user_helper_task() -> None:
-    if not HELPER_INSTALL_PATH.exists():
-        logging.warning("Skipping ADTAgentHelper registration — helper script missing")
-        return
-    helper_path = str(HELPER_INSTALL_PATH).replace("'", "''")
-    script = f"""
-$ErrorActionPreference = 'Stop'
-$helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File `"{helper_path}`""
-$helperTrigger = New-ScheduledTaskTrigger -AtLogOn
-$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable
-Register-ScheduledTask -TaskName '{HELPER_TASK_NAME}' -Action $helperAction -Trigger $helperTrigger -Settings $helperSettings -Force | Out-Null
-Start-ScheduledTask -TaskName '{HELPER_TASK_NAME}' -ErrorAction SilentlyContinue
-"""
-    proc = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "Failed to register user helper task").strip()
-        logging.warning("ADTAgentHelper registration failed: %s", detail)
+def stop_other_agent_processes() -> None:
+    stop_scheduled_task()
+    cleanup_stale_agent_processes()
+
+
+_WINDOWS_DIR = Path(__file__).resolve().parent
+if str(_WINDOWS_DIR) not in sys.path:
+    sys.path.insert(0, str(_WINDOWS_DIR))
+
+from user_helper_task import (  # noqa: E402
+    ensure_helper_script_present,
+    ensure_helper_task_registered,
+)
 
 
 def register_scheduled_task() -> None:
@@ -264,9 +230,8 @@ def install_windows_agent() -> None:
                 time.sleep(1)
         if last_error:
             raise RuntimeError(f"Could not copy agent to {dest}: {last_error}")
-    copy_user_helper()
+    ensure_helper_script_present()
     register_scheduled_task()
-    register_user_helper_task()
 
 
 def start_installed_agent() -> None:
@@ -1089,13 +1054,11 @@ def main() -> None:
     setup_logging(log_file, verbose=verbose, console_log=console_log)
     if is_frozen() and is_running_from_install_dir():
         cleanup_previous_backup(INSTALL_EXE_PATH)
+        cleanup_stale_agent_processes()
         try:
-            if not HELPER_INSTALL_PATH.exists():
-                copy_user_helper()
-            if HELPER_INSTALL_PATH.exists():
-                register_user_helper_task()
+            ensure_helper_script_present()
         except Exception:
-            logging.exception("User-session helper setup failed")
+            logging.exception("User-session helper script install failed")
 
     if not endpoint_id or not is_valid_uuid(endpoint_id):
         raise ValueError(f"Invalid or missing ENDPOINT_ID in {config_file}")
@@ -1196,6 +1159,12 @@ def main() -> None:
                         logging.exception("Inventory refresh failed: %s", exc)
 
                 if should_run("metrics", last_runs, intervals["metrics"], now_ts):
+                    if is_frozen() and is_running_from_install_dir():
+                        try:
+                            ensure_helper_task_registered()
+                        except Exception:
+                            logging.exception("User-session helper registration check failed")
+
                     cycle += 1
                     started = time.time()
                     try:

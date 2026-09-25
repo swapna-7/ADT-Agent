@@ -1,23 +1,56 @@
 # ADT Agent
 
-Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.5).
+Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.7).
 
 ## Windows user-session display helper
 
 The SYSTEM agent (`ADTAgent`) cannot show toasts or set wallpaper directly. A second process runs at user logon:
 
-- Script: [`windows/user_helper.ps1`](windows/user_helper.ps1)
+- Script: [`windows/user_helper.ps1`](windows/user_helper.ps1) (bundled in the agent binary; copied on install/update)
 - Task: `ADTAgentHelper` (AtLogOn, logged-in user)
 - IPC files in `C:\ProgramData\ADT Agent\`: `pending_display.json`, `display_results.json`
+
+From **2.1.7**, the SYSTEM agent registers `ADTAgentHelper` automatically on each metrics cycle when an interactive user is logged in (no install-time registration — avoids `0x80070534` when no user is present). Pre-2.1.7 endpoints need a one-time manual registration while logged in at the console (see below).
 
 After upgrading agents on a machine, verify in Admin PowerShell:
 
 ```powershell
-Stop-ScheduledTask -TaskName ADTAgent,ADTAgentHelper -EA SilentlyContinue
-Get-Process adt-agent -EA SilentlyContinue | Stop-Process -Force
-# Replace adt-agent.exe with the latest release binary, then:
-Start-ScheduledTask -TaskName ADTAgentHelper
+$install = "C:\Program Files\ADT Agent\adt-agent.exe"
+$staging = "C:\ProgramData\ADT Agent\update\adt-agent.exe"
+$backup  = "C:\Program Files\ADT Agent\adt-agent.old"
+$version = "2.1.7"   # GitHub release tag without v
+
+Disable-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
+Disable-ScheduledTask -TaskName ADTAgentHelper -ErrorAction SilentlyContinue
+Stop-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
+Stop-ScheduledTask -TaskName ADTAgentHelper -ErrorAction SilentlyContinue
+Get-Process -Name adt-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+
+New-Item -ItemType Directory -Force -Path (Split-Path $staging) | Out-Null
+Invoke-WebRequest `
+  -Uri "https://github.com/swapna-7/ADT-Agent/releases/download/v$version/adt-agent-windows.exe" `
+  -OutFile $staging
+
+# Windows locks the running image — rename it, then copy the new binary in place.
+if (Test-Path $backup) { Remove-Item $backup -Force }
+if (Test-Path $install) { Rename-Item $install $backup -Force }
+Copy-Item $staging $install -Force
+
+Enable-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
 Start-ScheduledTask -TaskName ADTAgent
+Start-Sleep -Seconds 5
+Get-Process -Name adt-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-ScheduledTask -TaskName ADTAgent   # one process only after manual binary swap
+
+# ADTAgentHelper (portal toasts/wallpaper) — register while a user is logged in:
+$helperPath = "C:\Program Files\ADT Agent\user_helper.ps1"
+$user = (Get-CimInstance Win32_ComputerSystem).UserName
+$helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File `"$helperPath`""
+$helperTrigger = New-ScheduledTaskTrigger -AtLogOn
+$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive
+Register-ScheduledTask -TaskName ADTAgentHelper -Action $helperAction -Trigger $helperTrigger -Settings $helperSettings -Principal $principal -Force
+Start-ScheduledTask -TaskName ADTAgentHelper
 Get-Content "C:\ProgramData\ADT Agent\agent.log" -Tail 20
 ```
 

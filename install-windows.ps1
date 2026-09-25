@@ -66,9 +66,7 @@ Register-ScheduledTask `
     -Principal $principal `
     -Force | Out-Null
 
-if (Test-Path $helperDest) {
-    & (Join-Path $repoRoot 'windows\register-user-helper.ps1') -HelperPath $helperDest
-}
+# ADTAgentHelper is registered at runtime when a user logs in (agent 2.1.7+).
 
 Write-Host ""
 Write-Host "==> Interactive enrollment (enter organisation code when prompted)"
