@@ -23,6 +23,13 @@ function Write-HelperLog {
     }
 }
 
+function Ensure-ToastTypes {
+    if ('Windows.UI.Notifications.ToastNotification' -as [type]) { return }
+    # WinRT assembly refs must be a single line each (multi-line breaks the parser).
+    [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+    [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime]
+}
+
 Write-HelperLog 'ADTAgentHelper started (pid=' + $PID + ')'
 
 while ($true) {
@@ -51,10 +58,7 @@ while ($true) {
             try {
                 switch ($task.type) {
                     'toast' {
-                        [void][Windows.UI.Notifications.ToastNotificationManager,
-                               Windows.UI.Notifications, ContentType = WindowsRuntime]
-                        [void][Windows.Data.Xml.Dom.XmlDocument,
-                               Windows.Data.Xml.Dom, ContentType = WindowsRuntime]
+                        Ensure-ToastTypes
                         $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
                         $xml.LoadXml([string]$task.xml)
                         $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)

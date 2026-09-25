@@ -155,6 +155,12 @@ def test_register_helper_task_uses_schtasks_and_user_logon_trigger(
     assert "Start-ScheduledTask" not in script
 
 
+def test_user_helper_ps1_winrt_loads_are_single_line() -> None:
+    script = (_WINDOWS / "user_helper.ps1").read_text(encoding="utf-8")
+    assert "ToastNotificationManager,\n" not in script
+    assert "ToastNotificationManager, Windows.UI.Notifications" in script
+
+
 def test_build_helper_task_arguments_quotes_spaces() -> None:
     args = uht.build_helper_task_arguments(r"C:\ProgramData\ADT Agent\user_helper.ps1")
     assert "-Command" in args
