@@ -10,7 +10,7 @@ The SYSTEM agent (`ADTAgent`) cannot show toasts or set wallpaper directly. A se
 - Task: `ADTAgentHelper` (AtLogOn, logged-in user)
 - IPC files in `C:\ProgramData\ADT Agent\`: `pending_display.json`, `display_results.json`
 
-From **2.1.7**, the SYSTEM agent registers `ADTAgentHelper` automatically on each metrics cycle when an interactive user is logged in (no install-time registration — avoids `0x80070534` when no user is present). Pre-2.1.7 endpoints need a one-time manual registration while logged in at the console (see below).
+From **2.1.8**, the SYSTEM agent registers `ADTAgentHelper` at startup and on each metrics cycle when an interactive user is logged in (WTS username + explicit principal — avoids `0x80070534`). Pre-2.1.8 endpoints need a one-time manual registration while logged in at the console (see below).
 
 After upgrading agents on a machine, verify in Admin PowerShell:
 
@@ -18,7 +18,7 @@ After upgrading agents on a machine, verify in Admin PowerShell:
 $install = "C:\Program Files\ADT Agent\adt-agent.exe"
 $staging = "C:\ProgramData\ADT Agent\update\adt-agent.exe"
 $backup  = "C:\Program Files\ADT Agent\adt-agent.old"
-$version = "2.1.7"   # GitHub release tag without v
+$version = "2.1.8"   # GitHub release tag without v
 
 Disable-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
 Disable-ScheduledTask -TaskName ADTAgentHelper -ErrorAction SilentlyContinue

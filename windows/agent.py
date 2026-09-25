@@ -1057,8 +1057,9 @@ def main() -> None:
         cleanup_stale_agent_processes()
         try:
             ensure_helper_script_present()
+            ensure_helper_task_registered()
         except Exception:
-            logging.exception("User-session helper script install failed")
+            logging.exception("User-session helper setup failed")
 
     if not endpoint_id or not is_valid_uuid(endpoint_id):
         raise ValueError(f"Invalid or missing ENDPOINT_ID in {config_file}")

@@ -19,6 +19,8 @@ WTS_CURRENT_SERVER_HANDLE = 0
 WTSActive = 0
 WTSConnected = 1
 WTSDisconnected = 4
+WTSUserName = 5
+WTSDomainName = 7
 
 TOKEN_DUPLICATE = 0x0002
 TOKEN_QUERY = 0x0008
@@ -84,16 +86,58 @@ def has_interactive_session() -> bool:
         return False
 
 
+def _wts_session_string(session_id: int, info_class: int) -> str | None:
+    """Read a WTSQuerySessionInformationW string for *session_id*."""
+    wts = ctypes.WinDLL("wtsapi32")
+    buffer = ctypes.POINTER(ctypes.c_wchar)()
+    bytes_returned = wintypes.DWORD()
+    if not wts.WTSQuerySessionInformationW(
+        WTS_CURRENT_SERVER_HANDLE,
+        session_id,
+        info_class,
+        ctypes.byref(buffer),
+        ctypes.byref(bytes_returned),
+    ):
+        return None
+    try:
+        value = ctypes.wstring_at(buffer).strip()
+        return value or None
+    finally:
+        wts.WTSFreeMemory(buffer)
+
+
+def _format_domain_user(domain: str | None, username: str | None) -> str | None:
+    user = (username or "").strip()
+    if not user:
+        return None
+    if "\\" in user:
+        return user
+    dom = (domain or "").strip()
+    if dom:
+        return f"{dom}\\{user}"
+    return user
+
+
 def get_active_interactive_user() -> str | None:
     """Return DOMAIN\\user for the active console session, or None if none."""
     if sys.platform != "win32":
         return None
     try:
-        if _active_session_id() is None:
-            return None
+        session_id = _active_session_id()
     except Exception as exc:
         log.warning("get_active_interactive_user session probe failed: %s", exc)
         return None
+    if session_id is None:
+        return None
+
+    try:
+        username = _wts_session_string(session_id, WTSUserName)
+        domain = _wts_session_string(session_id, WTSDomainName)
+        wts_user = _format_domain_user(domain, username)
+        if wts_user:
+            return wts_user
+    except Exception as exc:
+        log.warning("get_active_interactive_user WTS lookup failed: %s", exc)
 
     try:
         proc = subprocess.run(
