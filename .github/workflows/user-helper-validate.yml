@@ -33,8 +33,14 @@ jobs:
         run: |
           $bad = Join-Path $PWD 'windows\scripts\fixtures\user_helper_bad_winrt.ps1'
           $script = Join-Path $PWD 'windows\scripts\validate-user-helper.ps1'
-          & $script -ScriptPath $bad -ParseOnly
-          if ($LASTEXITCODE -eq 0) { Write-Error 'Expected parse failure for bad fixture'; exit 1 }
+          $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script,
+            '-ScriptPath', $bad, '-ParseOnly'
+          ) -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -eq 0) {
+            Write-Error 'Expected parse failure for bad fixture'
+            exit 1
+          }
           Write-Host 'Bad fixture correctly rejected'
 
       - name: Smoke test (scheduled-task invocation, path with spaces)
