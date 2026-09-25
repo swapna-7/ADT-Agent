@@ -125,6 +125,34 @@ def test_helper_script_version_matches_agent_version_after_self_update(
     assert uht.HELPER_VERSION_MARKER.read_text(encoding="utf-8") == "2.1.8"
 
 
+def test_register_helper_task_uses_schtasks_and_user_logon_trigger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper = tmp_path / "user_helper.ps1"
+    helper.write_text("# helper", encoding="utf-8")
+    captured: dict[str, str] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["script"] = cmd[-1]
+        class Proc:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Proc()
+
+    monkeypatch.setattr(uht.subprocess, "run", fake_run)
+    monkeypatch.setattr(uht, "start_helper_task", lambda **k: True)
+
+    assert uht.register_helper_task("DESKTOP\\swapna", helper_path=helper)
+    script = captured["script"]
+    assert "-AtLogOn -User 'DESKTOP\\swapna'" in script
+    assert "schtasks /Run /TN 'ADTAgentHelper'" in script
+    assert "MultipleInstances IgnoreNew" in script
+    assert "Start-ScheduledTask" not in script
+
+
 def test_debug_log_writes_ndjson(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     log_path = tmp_path / "debug-5a7da5.log"
     monkeypatch.setattr(uht, "DEBUG_LOG_PATH", log_path)

@@ -23,8 +23,9 @@ from win_session import get_active_interactive_user  # noqa: E402
 log = logging.getLogger(__name__)
 
 INSTALL_DIR = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "ADT Agent"
-HELPER_INSTALL_PATH = INSTALL_DIR / "user_helper.ps1"
 DATA_DIR = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ADT Agent"
+# User-session helper must live under ProgramData — Program Files is SYSTEM/admin-only.
+HELPER_INSTALL_PATH = DATA_DIR / "user_helper.ps1"
 HELPER_VERSION_MARKER = DATA_DIR / ".helper_version"
 HELPER_TASK_NAME = "ADTAgentHelper"
 DEBUG_LOG_PATH = DATA_DIR / "debug-5a7da5.log"
@@ -89,7 +90,7 @@ def ensure_helper_script_present() -> Path | None:
         log.warning("user_helper.ps1 not found in agent bundle")
         return None
 
-    INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     marker_ok = (
         HELPER_INSTALL_PATH.is_file()
         and HELPER_VERSION_MARKER.is_file()
@@ -198,7 +199,7 @@ def register_helper_task(user: str, *, helper_path: Path | None = None) -> bool:
 $ErrorActionPreference = 'Stop'
 $helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File `"{helper_path_ps}`""
 $helperTrigger = New-ScheduledTaskTrigger -AtLogOn -User '{safe_user}'
-$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable -MultipleInstances StopExisting
+$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId '{safe_user}' -LogonType Interactive
 Register-ScheduledTask -TaskName '{HELPER_TASK_NAME}' -Action $helperAction -Trigger $helperTrigger -Settings $helperSettings -Principal $principal -Force | Out-Null
 schtasks /Run /TN '{HELPER_TASK_NAME}' | Out-Null

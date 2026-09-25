@@ -1,6 +1,6 @@
 # Register ADTAgentHelper — user-session display helper (AtLogOn, runs as logged-in user).
 param(
-    [string]$HelperPath = (Join-Path ${env:ProgramFiles} 'ADT Agent\user_helper.ps1')
+    [string]$HelperPath = (Join-Path $env:ProgramData 'ADT Agent\user_helper.ps1')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,7 +27,7 @@ $helperSettings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -AllowStartIfOnBatteries `
     -StartWhenAvailable `
-    -MultipleInstances StopExisting
+    -MultipleInstances IgnoreNew
 
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive
 

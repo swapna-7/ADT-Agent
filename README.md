@@ -1,6 +1,6 @@
 # ADT Agent
 
-Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.7).
+Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.10).
 
 ## Windows user-session display helper
 
@@ -10,7 +10,9 @@ The SYSTEM agent (`ADTAgent`) cannot show toasts or set wallpaper directly. A se
 - Task: `ADTAgentHelper` (AtLogOn, logged-in user)
 - IPC files in `C:\ProgramData\ADT Agent\`: `pending_display.json`, `display_results.json`
 
-From **2.1.9**, the SYSTEM agent registers and starts `ADTAgentHelper` via `schtasks /Run` (AtLogOn + explicit user principal). Pre-2.1.9 endpoints may need a one-time manual registration while logged in at the console (see below).
+From **2.1.10**, `user_helper.ps1` lives in **`C:\ProgramData\ADT Agent\`** (readable by the logged-in user). The SYSTEM agent registers and starts `ADTAgentHelper` via `schtasks /Run`. Pre-2.1.10 endpoints need a one-time manual fix while logged in at the console (see below).
+
+**2.1.10** allows Supabase Storage public branding URLs (`*.supabase.co/storage/v1/object/public/…`) so wallpaper/lockscreen jobs no longer fail with “Untrusted image URL”.
 
 After upgrading agents on a machine, verify in Admin PowerShell:
 
@@ -18,7 +20,7 @@ After upgrading agents on a machine, verify in Admin PowerShell:
 $install = "C:\Program Files\ADT Agent\adt-agent.exe"
 $staging = "C:\ProgramData\ADT Agent\update\adt-agent.exe"
 $backup  = "C:\Program Files\ADT Agent\adt-agent.old"
-$version = "2.1.9"   # GitHub release tag without v
+$version = "2.1.10"   # GitHub release tag without v
 
 Disable-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
 Disable-ScheduledTask -TaskName ADTAgentHelper -ErrorAction SilentlyContinue
@@ -43,11 +45,11 @@ Get-Process -Name adt-agent -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-ScheduledTask -TaskName ADTAgent   # one process only after manual binary swap
 
 # ADTAgentHelper (portal toasts/wallpaper) — register while a user is logged in:
-$helperPath = "C:\Program Files\ADT Agent\user_helper.ps1"
+$helperPath = "C:\ProgramData\ADT Agent\user_helper.ps1"
 $user = (Get-CimInstance Win32_ComputerSystem).UserName
 $helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File `"$helperPath`""
 $helperTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
-$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable -MultipleInstances StopExisting
+$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive
 Register-ScheduledTask -TaskName ADTAgentHelper -Action $helperAction -Trigger $helperTrigger -Settings $helperSettings -Principal $principal -Force
 schtasks /Run /TN ADTAgentHelper

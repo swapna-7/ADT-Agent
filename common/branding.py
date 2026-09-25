@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -32,11 +33,19 @@ ALLOWED_URL_PREFIXES = [
     "https://vizhi.rcsaware.com/",
 ]
 
+# Public branding objects live under Supabase Storage; host is project-specific.
+_SUPABASE_PUBLIC_STORAGE = re.compile(
+    r"^https://[a-z0-9-]+\.supabase\.co/storage/v1/object/public/",
+    re.I,
+)
+
 
 def is_trusted_url(url: str) -> bool:
     text = (url or "").strip()
     if not text.startswith("https://"):
         return False
+    if _SUPABASE_PUBLIC_STORAGE.match(text):
+        return True
     prefixes = list(ALLOWED_URL_PREFIXES)
     supabase = os.environ.get("SUPABASE_URL", "").rstrip("/")
     if supabase:

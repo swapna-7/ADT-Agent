@@ -26,7 +26,7 @@ New-Item -ItemType Directory -Force -Path $installDir, $dataDir | Out-Null
 Copy-Item -Force $BinaryPath $installExe
 
 $helperSrc = Join-Path $repoRoot 'windows\user_helper.ps1'
-$helperDest = Join-Path $installDir 'user_helper.ps1'
+$helperDest = Join-Path $dataDir 'user_helper.ps1'
 if (Test-Path $helperSrc) {
     Copy-Item -Force $helperSrc $helperDest
 }

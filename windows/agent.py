@@ -58,8 +58,8 @@ REG_PATHS = [
 
 INSTALL_DIR = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "ADT Agent"
 INSTALL_EXE_PATH = INSTALL_DIR / "adt-agent.exe"
-HELPER_INSTALL_PATH = INSTALL_DIR / "user_helper.ps1"
 DATA_DIR = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ADT Agent"
+HELPER_INSTALL_PATH = DATA_DIR / "user_helper.ps1"
 TASK_NAME = "ADTAgent"
 HELPER_TASK_NAME = "ADTAgentHelper"
 
