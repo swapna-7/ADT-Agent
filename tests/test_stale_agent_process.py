@@ -12,12 +12,12 @@ _WINDOWS = Path(__file__).resolve().parents[1] / "windows"
 if str(_WINDOWS) not in sys.path:
     sys.path.insert(0, str(_WINDOWS))
 
-import agent  # noqa: E402
-
-
 def test_cleanup_stale_agent_process_terminates_other_pids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows agent cleanup")
+    import agent  # noqa: E402
     self_pid = 1000
     other = MagicMock()
     other.info = {"pid": 2000, "name": "adt-agent.exe", "exe": str(agent.INSTALL_EXE_PATH)}

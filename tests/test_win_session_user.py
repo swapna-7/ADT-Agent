@@ -24,6 +24,7 @@ def test_get_active_interactive_user_none_without_session(
 def test_get_active_interactive_user_returns_cim_username(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("win_session.sys.platform", "win32")
     monkeypatch.setattr("win_session._active_session_id", lambda: 1)
 
     class Proc:
