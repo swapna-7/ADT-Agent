@@ -99,6 +99,12 @@ jobs:
             exit 1
           fi
           python generate_api_config.py "$VIZHI_API_BASE"
+      - name: Validate user_helper.ps1 (PS 5.1 parse + smoke)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $script = Join-Path $PWD 'windows\scripts\validate-user-helper.ps1'
+          & $script -ScriptPath (Join-Path $PWD 'windows\user_helper.ps1') -SmokeTest
       - name: Build Windows
         if: runner.os == 'Windows'
         env:

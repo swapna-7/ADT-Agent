@@ -1,0 +1,44 @@
+name: user_helper.ps1 validation
+
+on:
+  push:
+    paths:
+      - "windows/user_helper.ps1"
+      - "windows/user_helper_task.py"
+      - "windows/scripts/validate-user-helper.ps1"
+      - "windows/scripts/fixtures/**"
+      - ".github/workflows/user-helper-validate.yml"
+  pull_request:
+    paths:
+      - "windows/user_helper.ps1"
+      - "windows/user_helper_task.py"
+      - "windows/scripts/validate-user-helper.ps1"
+      - "windows/scripts/fixtures/**"
+      - ".github/workflows/user-helper-validate.yml"
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse user_helper.ps1 (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $script = Join-Path $PWD 'windows\scripts\validate-user-helper.ps1'
+          & $script -ScriptPath (Join-Path $PWD 'windows\user_helper.ps1') -ParseOnly
+
+      - name: Reject known-bad WinRT syntax fixture
+        shell: powershell
+        run: |
+          $bad = Join-Path $PWD 'windows\scripts\fixtures\user_helper_bad_winrt.ps1'
+          $script = Join-Path $PWD 'windows\scripts\validate-user-helper.ps1'
+          & $script -ScriptPath $bad -ParseOnly
+          if ($LASTEXITCODE -eq 0) { Write-Error 'Expected parse failure for bad fixture'; exit 1 }
+          Write-Host 'Bad fixture correctly rejected'
+
+      - name: Smoke test (scheduled-task invocation, path with spaces)
+        shell: powershell
+        run: |
+          $script = Join-Path $PWD 'windows\scripts\validate-user-helper.ps1'
+          & $script -ScriptPath (Join-Path $PWD 'windows\user_helper.ps1') -SmokeTest

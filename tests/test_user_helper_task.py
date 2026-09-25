@@ -106,9 +106,9 @@ def test_helper_script_version_matches_agent_version_after_self_update(
     install_dir.mkdir()
     data_dir.mkdir()
 
-    monkeypatch.setattr(uht, "INSTALL_DIR", install_dir)
-    monkeypatch.setattr(uht, "HELPER_INSTALL_PATH", install_dir / "user_helper.ps1")
+    helper_path = data_dir / "user_helper.ps1"
     monkeypatch.setattr(uht, "DATA_DIR", data_dir)
+    monkeypatch.setattr(uht, "HELPER_INSTALL_PATH", helper_path)
     monkeypatch.setattr(uht, "HELPER_VERSION_MARKER", data_dir / ".helper_version")
     monkeypatch.setattr(uht, "_resolve_user_helper_source", lambda: src)
     monkeypatch.setattr(uht, "AGENT_VERSION", "2.1.7")
@@ -166,6 +166,53 @@ def test_build_helper_task_arguments_quotes_spaces() -> None:
     assert "-Command" in args
     assert "ADT Agent" in args
     assert "-File" not in args
+
+
+def test_verify_helper_started_detects_missing_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "user_helper.log"
+    monkeypatch.setattr(uht, "HELPER_LOG_PATH", log_path)
+    monkeypatch.setattr(uht, "HELPER_VERIFY_TIMEOUT_S", 1)
+    monkeypatch.setattr(uht, "HELPER_VERIFY_POLL_S", 0.1)
+    monkeypatch.setattr(uht.time, "sleep", lambda _s: None)
+    report = MagicMock()
+    monkeypatch.setattr(uht, "report_helper_registration_failure", report)
+    assert uht.verify_helper_started(timeout_seconds=1, poll_interval=0.1) is False
+    uht._verify_and_report("https://vizhi.test", "token")
+    report.assert_called_once_with(
+        "https://vizhi.test",
+        "token",
+        "helper_task_did_not_produce_log_within_timeout",
+    )
+
+
+def test_verify_helper_started_succeeds_on_real_log_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "user_helper.log"
+    monkeypatch.setattr(uht, "HELPER_LOG_PATH", log_path)
+    monkeypatch.setattr(uht, "HELPER_VERIFY_TIMEOUT_S", 2)
+    monkeypatch.setattr(uht, "HELPER_VERIFY_POLL_S", 0.1)
+
+    def write_log_after_sleep(seconds: float) -> None:
+        if seconds >= 0.1:
+            log_path.write_text("2026-01-01 ADTAgentHelper started (pid=1)\n", encoding="utf-8")
+
+    monkeypatch.setattr(uht.time, "sleep", write_log_after_sleep)
+    report_ok = MagicMock()
+    monkeypatch.setattr(uht, "report_helper_status", report_ok)
+    assert uht.verify_helper_started(timeout_seconds=2, poll_interval=0.1) is True
+    uht._verify_and_report("https://vizhi.test", "token")
+    report_ok.assert_called_once_with("https://vizhi.test", "token", ok=True)
+
+
+def test_ci_smoke_staging_path_includes_space() -> None:
+    script = (_WINDOWS / "scripts" / "validate-user-helper.ps1").read_text(encoding="utf-8")
+    assert "ADT Agent CI Space" in script
+    assert "ProgramData Root" in script
 
 
 def test_debug_log_writes_ndjson(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

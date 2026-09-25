@@ -1052,14 +1052,6 @@ def main() -> None:
     console_log = is_truthy(os.getenv("CONSOLE_LOG", env.get("CONSOLE_LOG", "1")))
 
     setup_logging(log_file, verbose=verbose, console_log=console_log)
-    if is_frozen() and is_running_from_install_dir():
-        cleanup_previous_backup(INSTALL_EXE_PATH)
-        cleanup_stale_agent_processes()
-        try:
-            ensure_helper_script_present()
-            ensure_helper_task_registered()
-        except Exception:
-            logging.exception("User-session helper setup failed")
 
     if not endpoint_id or not is_valid_uuid(endpoint_id):
         raise ValueError(f"Invalid or missing ENDPOINT_ID in {config_file}")
@@ -1067,6 +1059,18 @@ def main() -> None:
         raise ValueError(f"Missing DEVICE_TOKEN in {config_file}")
 
     session = DeviceSession(api_base, config_file, AGENT_VERSION, local_config)
+
+    if is_frozen() and is_running_from_install_dir():
+        cleanup_previous_backup(INSTALL_EXE_PATH)
+        cleanup_stale_agent_processes()
+        try:
+            ensure_helper_script_present()
+            ensure_helper_task_registered(
+                api_base=api_base,
+                device_token=session.device_token,
+            )
+        except Exception:
+            logging.exception("User-session helper setup failed")
 
     last_runs = load_last_runs(local_config)
     logging.info(
@@ -1162,7 +1166,10 @@ def main() -> None:
                 if should_run("metrics", last_runs, intervals["metrics"], now_ts):
                     if is_frozen() and is_running_from_install_dir():
                         try:
-                            ensure_helper_task_registered()
+                            ensure_helper_task_registered(
+                                api_base=api_base,
+                                device_token=session.device_token,
+                            )
                         except Exception:
                             logging.exception("User-session helper registration check failed")
 

@@ -12,11 +12,14 @@ import time
 from pathlib import Path
 from typing import Callable
 
+import requests
+
 _WINDOWS = Path(__file__).resolve().parent
 _COMMON = _WINDOWS.parent / "common"
 if str(_COMMON) not in sys.path:
     sys.path.insert(0, str(_COMMON))
 
+from enrollment import device_headers  # noqa: E402
 from version import AGENT_VERSION  # noqa: E402
 from win_session import get_active_interactive_user  # noqa: E402
 
@@ -29,7 +32,12 @@ HELPER_INSTALL_PATH = DATA_DIR / "user_helper.ps1"
 HELPER_VERSION_MARKER = DATA_DIR / ".helper_version"
 HELPER_TASK_NAME = "ADTAgentHelper"
 DEBUG_LOG_PATH = DATA_DIR / "debug-5a7da5.log"
+HELPER_LOG_PATH = DATA_DIR / "user_helper.log"
+HELPER_LOG_FALLBACK = Path(os.environ.get("TEMP", r"C:\Windows\Temp")) / "adt-agent-user_helper.log"
+HELPER_LOG_START_MARKER = "ADTAgentHelper started"
 SESSION_ID = "5a7da5"
+HELPER_VERIFY_TIMEOUT_S = 15
+HELPER_VERIFY_POLL_S = 2.0
 
 
 def _is_frozen() -> bool:
@@ -136,6 +144,111 @@ def is_helper_running() -> bool:
     except Exception as exc:
         log.debug("is_helper_running probe failed: %s", exc)
     return False
+
+
+def get_mtime_if_exists(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime if path.is_file() else None
+    except OSError:
+        return None
+
+
+def _log_contains_start_marker(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return HELPER_LOG_START_MARKER in text
+
+
+def verify_helper_started(
+    *,
+    timeout_seconds: int = HELPER_VERIFY_TIMEOUT_S,
+    poll_interval: float = HELPER_VERIFY_POLL_S,
+) -> bool:
+    """True when user_helper.log (or TEMP fallback) gains ADTAgentHelper started."""
+    deadline = time.time() + max(1, int(timeout_seconds))
+    baseline_primary = get_mtime_if_exists(HELPER_LOG_PATH)
+    baseline_fallback = get_mtime_if_exists(HELPER_LOG_FALLBACK)
+
+    while time.time() < deadline:
+        time.sleep(max(0.5, poll_interval))
+        for path, baseline in (
+            (HELPER_LOG_PATH, baseline_primary),
+            (HELPER_LOG_FALLBACK, baseline_fallback),
+        ):
+            mtime = get_mtime_if_exists(path)
+            if mtime is None:
+                continue
+            if baseline is None or mtime > baseline:
+                if _log_contains_start_marker(path):
+                    _debug_log(
+                        "F",
+                        "user_helper_task.py:verify_helper_started",
+                        "helper log confirmed",
+                        {"path": str(path)},
+                        run_id="post-fix",
+                    )
+                    return True
+                if path == HELPER_LOG_PATH:
+                    baseline_primary = mtime
+                else:
+                    baseline_fallback = mtime
+
+    _debug_log(
+        "F",
+        "user_helper_task.py:verify_helper_started",
+        "helper log missing within timeout",
+        {"timeout_seconds": timeout_seconds},
+        run_id="post-fix",
+    )
+    return False
+
+
+def report_helper_status(
+    api_base: str,
+    device_token: str,
+    *,
+    ok: bool,
+    reason: str | None = None,
+) -> None:
+    base = (api_base or "").strip().rstrip("/")
+    if not base or not device_token:
+        return
+    payload: dict[str, object] = {"ok": ok}
+    if reason:
+        payload["reason"] = (reason or "")[:200]
+    try:
+        requests.post(
+            f"{base}/api/agent/helper-status",
+            headers=device_headers(device_token),
+            json=payload,
+            timeout=15,
+        )
+    except Exception as exc:
+        log.warning("Could not report display helper status: %s", exc)
+
+
+def report_helper_registration_failure(
+    api_base: str,
+    device_token: str,
+    reason: str,
+) -> None:
+    log.warning("Display helper failed verification: %s", reason)
+    report_helper_status(api_base, device_token, ok=False, reason=reason)
+
+
+def _verify_and_report(api_base: str | None, device_token: str | None) -> None:
+    if not api_base or not device_token:
+        return
+    if verify_helper_started():
+        report_helper_status(api_base, device_token, ok=True)
+    else:
+        report_helper_registration_failure(
+            api_base,
+            device_token,
+            "helper_task_did_not_produce_log_within_timeout",
+        )
 
 
 def start_helper_task(*, task_name: str = HELPER_TASK_NAME) -> bool:
@@ -262,6 +375,8 @@ schtasks /Run /TN '{HELPER_TASK_NAME}' | Out-Null
 
 def ensure_helper_task_registered(
     *,
+    api_base: str | None = None,
+    device_token: str | None = None,
     get_user: Callable[[], str | None] | None = None,
     get_principal: Callable[[], str | None] | None = None,
     register: Callable[[str], bool] | None = None,
@@ -305,12 +420,14 @@ def ensure_helper_task_registered(
             "registered but helper not running — starting",
             {"user": active_user},
         )
-        start_helper_task()
+        if start_helper_task():
+            _verify_and_report(api_base, device_token)
         return
 
     log.info("Registering ADTAgentHelper for user: %s", active_user)
     try:
-        register_fn(active_user)
+        if register_fn(active_user):
+            _verify_and_report(api_base, device_token)
     except Exception as exc:
         _debug_log(
             "B",
