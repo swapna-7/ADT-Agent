@@ -94,13 +94,19 @@ def wait_for_display_result(
     return None
 
 
-def helper_recently_active(data_dir: Path, *, within_seconds: int = 60) -> bool:
-    """True if display_results.json was modified recently (helper likely running)."""
-    results_file = result_path(data_dir)
-    if not results_file.exists():
-        return False
-    try:
-        age = time.time() - results_file.stat().st_mtime
-        return age <= within_seconds
-    except OSError:
-        return False
+def helper_recently_active(data_dir: Path, *, within_seconds: int = 120) -> bool:
+    """True if the user helper appears to be running (log or results refreshed)."""
+    candidates = (
+        data_dir / RESULT_FILE,
+        data_dir / "user_helper.log",
+    )
+    now = time.time()
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            if now - path.stat().st_mtime <= within_seconds:
+                return True
+        except OSError:
+            continue
+    return False

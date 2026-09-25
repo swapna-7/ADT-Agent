@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,12 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 URL_PATTERN = re.compile(r"^https://[\w\-\.]+\.[a-z]{2,}(/.*)?$", re.I)
+
+# Registered WinRT AppUserModelID for Windows PowerShell — required for Show() to work.
+# A fake name like "Vizhi ADT" causes Access Denied or a silent no-op.
+POWERSHELL_TOAST_AUMID = (
+    r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
+)
 
 _NOTIF_BRANDING: dict[str, Any] = {}
 
@@ -73,6 +80,8 @@ def _classify_notify_error(exc: BaseException) -> str:
         return "no_interactive_session"
     if "access denied" in lower or "e_accessdenied" in lower or "0x80070005" in lower:
         return f"toast_access_denied: {text[:450]}"
+    if "toast_not_visible" in lower or "no_visible_toast" in lower:
+        return text[:500]
     return text[:500]
 
 
@@ -200,22 +209,30 @@ def _notify_windows_via_ipc(
     try:
         from display_ipc import (
             build_toast_xml,
-            helper_recently_active,
             wait_for_display_result,
             write_display_task,
         )
     except ImportError:
         return False
 
-    if not helper_recently_active(data_dir):
-        return False
-
+    # Always queue — helper polls every ~10s when ADTAgentHelper is running.
     task_id = write_display_task(
         data_dir,
         {"type": "toast", "xml": build_toast_xml(title, message)},
     )
-    result = wait_for_display_result(data_dir, task_id, timeout=15)
-    return result is not None and result.get("status") == "ok"
+    result = wait_for_display_result(data_dir, task_id, timeout=25)
+    if result is None:
+        log.info("IPC toast timed out for task %s (is ADTAgentHelper running?)", task_id)
+        return False
+    if result.get("status") == "ok":
+        return True
+    log.warning("IPC toast error: %s", result.get("error"))
+    return False
+
+
+def _toast_result_path() -> str:
+    public_dir = os.environ.get("PUBLIC", r"C:\Users\Public")
+    return os.path.join(public_dir, "vizhi_toast_result.txt")
 
 
 def _notify_windows_schtasks_toast(
@@ -223,17 +240,36 @@ def _notify_windows_schtasks_toast(
     title: str,
     message: str,
 ) -> bool:
+    """Run a verified toast in the interactive user session via schtasks."""
     safe_title = _escape_xml(title[:80])
     safe_message = _escape_xml(message[:200])
     public_dir = os.environ.get("PUBLIC", r"C:\Users\Public")
     tmp = os.path.join(public_dir, "vizhi_toast.ps1")
-    ps_content = f"""
-[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]
-[void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom,ContentType=WindowsRuntime]
-$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-$xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>{safe_title}</text><text>{safe_message}</text></binding></visual></toast>')
-$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Vizhi ADT').Show($toast)
+    result_file = _toast_result_path()
+    aumid = POWERSHELL_TOAST_AUMID.replace("'", "''")
+
+    try:
+        if os.path.exists(result_file):
+            os.remove(result_file)
+    except OSError:
+        pass
+
+    # Write ok/fail so the agent can tell silent WinRT failures from real delivery.
+    ps_content = f"""$ErrorActionPreference = 'Stop'
+$out = '{result_file.replace(chr(39), chr(39)+chr(39))}'
+try {{
+  [void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]
+  [void][Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom,ContentType=WindowsRuntime]
+  $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+  $xml.LoadXml('<toast duration="long"><visual><binding template="ToastGeneric"><text>{safe_title}</text><text>{safe_message}</text></binding></visual></toast>')
+  $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+  $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{aumid}')
+  $notifier.Show($toast)
+  Set-Content -Path $out -Value 'ok' -Encoding UTF8
+}} catch {{
+  Set-Content -Path $out -Value ("fail:" + $_.Exception.Message) -Encoding UTF8
+  exit 1
+}}
 """
     with open(tmp, "w", encoding="utf-8") as handle:
         handle.write(ps_content)
@@ -247,7 +283,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             "/TN",
             task_name,
             "/TR",
-            f'powershell -WindowStyle Hidden -NonInteractive -ExecutionPolicy Bypass -File "{tmp}"',
+            f'powershell -WindowStyle Hidden -STA -NonInteractive -ExecutionPolicy Bypass -File "{tmp}"',
             "/SC",
             "ONCE",
             "/ST",
@@ -262,6 +298,10 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         timeout=15,
     )
     if create.returncode != 0:
+        log.warning(
+            "schtasks create failed: %s",
+            (create.stderr or create.stdout or "")[:300],
+        )
         return False
 
     run = subprocess.run(
@@ -270,16 +310,41 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
         text=True,
         timeout=10,
     )
+    if run.returncode != 0:
+        log.warning("schtasks run failed: %s", (run.stderr or run.stdout or "")[:300])
+        return False
+
+    # Wait for the user-session script to confirm Show() succeeded.
+    deadline = time.time() + 20
+    status = ""
+    while time.time() < deadline:
+        time.sleep(0.5)
+        try:
+            if os.path.exists(result_file):
+                with open(result_file, encoding="utf-8") as handle:
+                    status = handle.read().strip()
+                break
+        except OSError:
+            continue
+
     subprocess.Popen(
         [
             "cmd",
             "/C",
-            f'timeout /T 30 && schtasks /Delete /F /TN {task_name} && del /F "{tmp}"',
+            f'timeout /T 5 && schtasks /Delete /F /TN {task_name} '
+            f'&& del /F "{tmp}" & del /F "{result_file}"',
         ],
         creationflags=getattr(subprocess, "DETACHED_PROCESS", 0x00000008),
         close_fds=True,
     )
-    return run.returncode == 0
+
+    if status == "ok":
+        return True
+    if status.startswith("fail:"):
+        log.warning("User-session toast failed: %s", status[5:][:300])
+        return False
+    log.warning("Toast result missing after schtasks run (status=%r)", status)
+    return False
 
 
 def _notify_windows(
@@ -289,9 +354,10 @@ def _notify_windows(
     *,
     data_dir: Path | None = None,
 ) -> None:
-    """Deliver toast in the logged-in user's session (SYSTEM cannot show toasts directly)."""
-    severity_label = severity
+    """Deliver a visible toast in the logged-in user's session.
 
+    Must not report success for Event Log-only fallbacks — those never show a toast.
+    """
     try:
         from win_session import has_interactive_session
     except ImportError:
@@ -317,26 +383,33 @@ def _notify_windows(
             log.debug("IPC toast failed, falling back: %s", exc)
 
     username = _windows_active_username()
-    if not username:
-        _notify_windows_eventlog(display_title, display_message, severity_label)
+    if username and _notify_windows_schtasks_toast(username, display_title, display_message):
         return
 
+    # msg.exe is a last-resort visible dialog (often disabled on modern Windows).
+    if username:
+        try:
+            msg = subprocess.run(
+                ["msg", username, f"{title_safe}: {message_safe}"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if msg.returncode == 0:
+                return
+        except Exception:
+            pass
+
+    # Audit only — never count as delivered.
     try:
-        msg = subprocess.run(
-            ["msg", username, f"{title_safe}: {message_safe}"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if msg.returncode == 0:
-            return
+        _notify_windows_eventlog(display_title, display_message, severity)
     except Exception:
         pass
 
-    if _notify_windows_schtasks_toast(username, display_title, display_message):
-        return
-
-    _notify_windows_eventlog(display_title, display_message, severity_label)
+    raise RuntimeError(
+        "no_visible_toast: install/start ADTAgentHelper at user logon, "
+        "or allow PowerShell toast notifications (Focus Assist / notification settings)"
+    )
 
 
 def _notify_macos(title: str, message: str, severity: str) -> None:
@@ -450,3 +523,4 @@ def _notify_linux(title: str, message: str, severity: str) -> None:
         timeout=5,
         check=False,
     )
+    raise RuntimeError("no_active_linux_session")

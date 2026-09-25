@@ -64,10 +64,14 @@ def test_helper_recently_active(tmp_path: Path):
     assert helper_recently_active(tmp_path) is False
     result_path(tmp_path).write_text("[]", encoding="utf-8")
     assert helper_recently_active(tmp_path) is True
-    old = time.time() - 120
+    old = time.time() - 300
     path = result_path(tmp_path)
     path.touch()
     import os
 
     os.utime(path, (old, old))
     assert helper_recently_active(tmp_path, within_seconds=60) is False
+
+    log_path = tmp_path / "user_helper.log"
+    log_path.write_text("started\n", encoding="utf-8")
+    assert helper_recently_active(tmp_path, within_seconds=60) is True
