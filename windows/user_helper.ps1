@@ -33,12 +33,20 @@ function Hide-HelperWindow {
                 [void][VizhiNative.VizhiWin]::ShowWindow($hwnd, 0)
             }
         }
+        $freed = $false
         if (-not $script:ConsoleFreed) {
             [void][VizhiNative.VizhiWin]::SetConsoleCtrlHandler([IntPtr]::Zero, $true)
-            [void][VizhiNative.VizhiWin]::FreeConsole()
+            $freed = [VizhiNative.VizhiWin]::FreeConsole()
             $script:ConsoleFreed = $true
         }
-    } catch {}
+        return @{
+            consoleHwnd = [int64]$consoleHwnd
+            mainHwnd = [int64]$mainHwnd
+            freed = $freed
+        }
+    } catch {
+        return @{ consoleHwnd = 0; mainHwnd = 0; freed = $false; error = "$_" }
+    }
 }
 
 function Write-SharedText {
@@ -96,6 +104,33 @@ function Write-HelperLog {
         $fallback = Join-Path $env:TEMP 'adt-agent-user_helper.log'
         try { Add-SharedLine -Path $fallback -Line $line } catch {}
     }
+}
+
+function Write-DebugLog {
+    param([string]$HypothesisId, [string]$Location, [string]$Message, $Data)
+    # #region agent log
+    $payload = @{
+        sessionId = 'c15c98'
+        runId = 'post-fix'
+        hypothesisId = $HypothesisId
+        location = $Location
+        message = $Message
+        data = $Data
+        timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    } | ConvertTo-Json -Compress -Depth 6
+    foreach ($p in @(
+        'c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log',
+        (Join-Path $DataDir 'debug-c15c98.log')
+    )) {
+        try { Add-SharedLine -Path $p -Line $payload } catch {}
+    }
+    try {
+        Invoke-RestMethod -Uri 'http://127.0.0.1:7622/ingest/60cf9d8b-4c11-4f0a-96a8-00e45250c36a' `
+            -Method POST -ContentType 'application/json' `
+            -Headers @{ 'X-Debug-Session-Id' = 'c15c98' } `
+            -Body $payload -TimeoutSec 1 | Out-Null
+    } catch {}
+    # #endregion
 }
 
 function Load-ShownIds {
@@ -157,10 +192,23 @@ function Ensure-ToastTypes {
 }
 
 Load-ShownIds
-Hide-HelperWindow | Out-Null
+$hwndInfo = Hide-HelperWindow
 Write-HelperLog 'ADTAgentHelper started (pid=' + $PID + ')'
+Write-DebugLog -HypothesisId 'C' -Location 'user_helper.ps1:start' -Message 'helper process started' -Data @{
+    pid = $PID
+    session = $PID
+    shownIdCount = $script:ShownIds.Count
+    consoleHwnd = $hwndInfo.consoleHwnd
+    mainHwnd = $hwndInfo.mainHwnd
+    freed = $hwndInfo.freed
+}
 $staleMarked = Mark-StalePendingIds
 Write-HelperLog "Marked $staleMarked stale pending id(s) without toasting"
+Write-DebugLog -HypothesisId 'D' -Location 'user_helper.ps1:start-drain' -Message 'marked stale pending ids without toast' -Data @{
+    staleMarked = $staleMarked
+    shownIdCount = $script:ShownIds.Count
+    pid = $PID
+}
 
 while ($true) {
     Hide-HelperWindow | Out-Null
@@ -175,6 +223,7 @@ while ($true) {
                     $results = @()
                     $shownCount = 0
                     $skippedCount = 0
+                    $lastShownId = $null
 
                     foreach ($task in $tasks) {
                         $tid = [string]$task.id
@@ -239,6 +288,7 @@ public class VizhiWallpaper {
                             if ($doWork) {
                                 if ($tid) { $script:ShownIds[$tid] = $true }
                                 $shownCount++
+                                $lastShownId = $tid
                             } else {
                                 $skippedCount++
                             }
@@ -253,12 +303,24 @@ public class VizhiWallpaper {
 
                     Write-SharedText -Path $ResultFile -Text ($results | ConvertTo-Json -Depth 4)
                     Save-ShownIds
-                    Clear-PendingQueue | Out-Null
+                    $cleared = Clear-PendingQueue
                     Write-HelperLog "Processed $($results.Count) display task(s) shown=$shownCount skipped=$skippedCount"
+                    Write-DebugLog -HypothesisId 'D' -Location 'user_helper.ps1:loop' -Message 'processed display tasks' -Data @{
+                        count = $results.Count
+                        shownCount = $shownCount
+                        skippedCount = $skippedCount
+                        lastShownId = $lastShownId
+                        pendingDeleted = [bool]$cleared.deleted
+                        pid = $PID
+                    }
                 }
             }
         } catch {
             Write-HelperLog "Helper loop error: $_"
+            Write-DebugLog -HypothesisId 'D' -Location 'user_helper.ps1:loop-error' -Message 'helper loop error' -Data @{
+                error = "$_"
+                pid = $PID
+            }
         }
     }
 
