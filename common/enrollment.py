@@ -268,6 +268,21 @@ def enroll(
 
     url = f"{base}{ENROLL_PATH}"
     logging.info("Enrolling %s with Vizhi at %s", body["hostname"], url)
+    # #region agent log
+    try:
+        import json as _json, time as _time
+        from pathlib import Path as _P
+        _rec = _json.dumps({"sessionId":"c15c98","runId":"pre-fix","hypothesisId":"B","location":"enrollment.py:enroll","message":"enroll POST starting","data":{"host":base.split("://",1)[-1].split("/",1)[0],"hostname":body.get("hostname"),"has_code":bool(normalized)},"timestamp":int(_time.time()*1000)})
+        for _p in (_P(r"c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log"), _P(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ADT Agent" / "debug-c15c98.log"):
+            try:
+                _p.parent.mkdir(parents=True, exist_ok=True)
+                with _p.open("a", encoding="utf-8") as _fh:
+                    _fh.write(_rec + "\n")
+            except OSError:
+                pass
+    except Exception:
+        pass
+    # #endregion
 
     try:
         resp = requests.post(
