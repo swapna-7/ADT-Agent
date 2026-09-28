@@ -266,32 +266,14 @@ schtasks /Run /TN '{HELPER_TASK_NAME}' | Out-Null
             check=False,
         )
     except Exception as exc:
-        _debug_log(
-            "B",
-            "user_helper_task.py:register_helper_task",
-            "register subprocess exception",
-            {"user": user, "error": str(exc)},
-        )
         log.warning("ADTAgentHelper registration exception: %s", exc)
         return False
 
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "Failed to register user helper task").strip()
-        _debug_log(
-            "B",
-            "user_helper_task.py:register_helper_task",
-            "register failed",
-            {"user": user, "returncode": proc.returncode, "detail": detail[:500]},
-        )
         log.warning("ADTAgentHelper registration failed: %s", detail)
         return False
 
-    _debug_log(
-        "C",
-        "user_helper_task.py:register_helper_task",
-        "register succeeded",
-        {"user": user},
-    )
     log.info("Registered ADTAgentHelper for user: %s", user)
     start_helper_task()
     return True
@@ -312,38 +294,14 @@ def ensure_helper_task_registered(
 
     active_user = user_fn()
     if not active_user:
-        _debug_log(
-            "A",
-            "user_helper_task.py:ensure_helper_task_registered",
-            "no active interactive session — skip",
-            {},
-        )
         log.debug("No active interactive session — skipping helper registration this cycle")
         return
 
     current_principal = principal_fn()
-    _debug_log(
-        "D",
-        "user_helper_task.py:ensure_helper_task_registered",
-        "principal check",
-        {"active_user": active_user, "current_principal": current_principal},
-    )
 
     if current_principal and _principal_matches(current_principal, active_user):
         if is_helper_running():
-            _debug_log(
-                "D",
-                "user_helper_task.py:ensure_helper_task_registered",
-                "already registered — helper running",
-                {"user": active_user},
-            )
             return
-        _debug_log(
-            "D",
-            "user_helper_task.py:ensure_helper_task_registered",
-            "registered but helper not running — starting",
-            {"user": active_user},
-        )
         if start_helper_task():
             _verify_and_report(api_base, device_token)
         return
@@ -353,12 +311,6 @@ def ensure_helper_task_registered(
         if register_fn(active_user):
             _verify_and_report(api_base, device_token)
     except Exception as exc:
-        _debug_log(
-            "B",
-            "user_helper_task.py:ensure_helper_task_registered",
-            "register raised — will retry next cycle",
-            {"user": active_user, "error": str(exc)},
-        )
         log.warning("ADTAgentHelper registration error (will retry): %s", exc)
 
 
