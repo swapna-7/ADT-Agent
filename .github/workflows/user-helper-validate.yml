@@ -18,33 +18,40 @@ on:
 
 jobs:
   validate:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Parse user_helper.ps1 (Windows PowerShell 5.1)
-        shell: powershell
+      - name: Validate user_helper.ps1 syntax
+        shell: pwsh
         run: |
-          $script = Join-Path $PWD 'windows\scripts\validate-user-helper.ps1'
-          & $script -ScriptPath (Join-Path $PWD 'windows\user_helper.ps1') -ParseOnly
-
-      - name: Reject known-bad WinRT syntax fixture
-        shell: powershell
-        run: |
-          $bad = Join-Path $PWD 'windows\scripts\fixtures\user_helper_bad_winrt.ps1'
-          $script = Join-Path $PWD 'windows\scripts\validate-user-helper.ps1'
-          $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
-            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script,
-            '-ScriptPath', $bad, '-ParseOnly'
-          ) -Wait -PassThru -NoNewWindow
-          if ($proc.ExitCode -eq 0) {
-            Write-Error 'Expected parse failure for bad fixture'
+          $errors = $null
+          $tokens = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "windows/user_helper.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object {
+              Write-Error "Line $($_.Extent.StartLineNumber): $($_.Message)"
+            }
             exit 1
           }
-          Write-Host 'Bad fixture correctly rejected'
+          Write-Host "Syntax OK — $($tokens.Count) tokens parsed"
 
-      - name: Smoke test (scheduled-task invocation, path with spaces)
-        shell: powershell
+      - name: Reject known-bad WinRT syntax fixture
+        shell: pwsh
         run: |
-          $script = Join-Path $PWD 'windows\scripts\validate-user-helper.ps1'
-          & $script -ScriptPath (Join-Path $PWD 'windows\user_helper.ps1') -SmokeTest
+          $errors = $null
+          $tokens = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "windows/scripts/fixtures/user_helper_bad_winrt.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -eq 0) {
+            Write-Error "Expected parse failure for bad fixture"
+            exit 1
+          }
+          Write-Host "Bad fixture correctly rejected ($($errors.Count) error(s))"

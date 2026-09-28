@@ -212,6 +212,7 @@ def download_and_verify(
     device_token: str,
     timeout: int = DOWNLOAD_TIMEOUT,
     expected_sig_b64: str | None = None,
+    api_base: str = "",
 ) -> bool:
     """Download from the Vizhi /download URL only. Each retry issues a fresh 302."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -290,7 +291,7 @@ def download_and_verify(
                 except OSError:
                     pass
                 report_update_failed(
-                    "",
+                    api_base,
                     device_token,
                     "signature_invalid",
                 )
@@ -378,6 +379,7 @@ def maybe_apply_update(
         sha256,
         device_token=device_token,
         expected_sig_b64=signature or None,
+        api_base=api_base,
     ):
         return False
 

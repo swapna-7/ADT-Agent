@@ -134,6 +134,46 @@ def test_download_and_verify_compares_sha256(tmp_path: Path, monkeypatch: pytest
     assert dest.read_bytes() == payload
 
 
+def test_download_and_verify_reports_signature_failure_with_api_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"signed-payload"
+    expected = hashlib.sha256(payload).hexdigest()
+    posted: list[tuple[str, str, str]] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int = 0):
+            yield payload
+
+    monkeypatch.setattr("self_update.requests.get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(
+        "self_update.report_update_failed",
+        lambda api_base, device_token, reason: posted.append((api_base, device_token, reason)),
+    )
+    monkeypatch.setattr("ed25519_verify_key.AGENT_VERIFY_PUBLIC_KEY", "dGVzdA==")
+    monkeypatch.setattr("self_update.verify_binary_signature", lambda *_args, **_kwargs: False)
+
+    dest = tmp_path / "staging" / "adt-agent.exe"
+    ok = download_and_verify(
+        "https://vizhi.rcsaware.com/api/agent/update/download?platform=windows",
+        dest,
+        expected,
+        device_token="test-token",
+        expected_sig_b64="AAAA",
+        api_base="https://vizhi.rcsaware.com",
+    )
+    assert ok is False
+    assert posted == [("https://vizhi.rcsaware.com", "test-token", "signature_invalid")]
+
+
 def test_sha256_of_replaced_file(tmp_path: Path) -> None:
     payload = b"vizhi-agent-payload"
     staging = tmp_path / "new.bin"

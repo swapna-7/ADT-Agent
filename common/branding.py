@@ -5,10 +5,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import re
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -29,28 +29,39 @@ log = logging.getLogger(__name__)
 BRANDING_CACHE_DIR: Path | None = None
 SESSION_WAIT_TIMEOUT_S = 4 * 60 * 60  # 4 hours
 
-ALLOWED_URL_PREFIXES = [
-    "https://vizhi.rcsaware.com/",
-]
 
-# Public branding objects live under Supabase Storage; host is project-specific.
-_SUPABASE_PUBLIC_STORAGE = re.compile(
-    r"^https://[a-z0-9-]+\.supabase\.co/storage/v1/object/public/",
-    re.I,
-)
-
-
-def is_trusted_url(url: str) -> bool:
-    text = (url or "").strip()
-    if not text.startswith("https://"):
+def is_trusted_url(url: str, api_base: str | None = "") -> bool:
+    if not url:
         return False
-    if _SUPABASE_PUBLIC_STORAGE.match(text):
-        return True
-    prefixes = list(ALLOWED_URL_PREFIXES)
-    supabase = os.environ.get("SUPABASE_URL", "").rstrip("/")
-    if supabase:
-        prefixes.append(supabase + "/storage/v1/object/public/")
-    return any(text.startswith(p) for p in prefixes if p)
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path or ""
+
+        if host in ("localhost", "127.0.0.1"):
+            return parsed.scheme in ("http", "https")
+
+        if parsed.scheme != "https":
+            return False
+
+        if host.endswith(".supabase.co"):
+            if (
+                "/storage/v1/object/public/" in path
+                or "/storage/v1/object/sign/" in path
+            ):
+                return True
+
+        if api_base:
+            own = (urllib.parse.urlparse(api_base).hostname or "").lower()
+            if own and host == own:
+                return True
+
+        if host == "vizhi.rcsaware.com":
+            return True
+
+        return False
+    except Exception:
+        return False
 
 
 def poll_branding(
@@ -160,7 +171,7 @@ def apply_branding_job(
         if job_type in ("wallpaper", "all"):
             if branding.get("wallpaper_enabled"):
                 try:
-                    apply_wallpaper(branding, data_dir=data_dir)
+                    apply_wallpaper(branding, data_dir=data_dir, api_base=api_base)
                     wallpaper_status = "completed"
                 except RuntimeError as exc:
                     if str(exc) == "pending_session":
@@ -180,7 +191,7 @@ def apply_branding_job(
         if job_type in ("lockscreen", "all"):
             if branding.get("lockscreen_enabled"):
                 try:
-                    apply_lockscreen(branding)
+                    apply_lockscreen(branding, api_base=api_base)
                     lockscreen_status = "completed"
                 except Exception as exc:
                     lockscreen_status = "failed"
@@ -256,11 +267,11 @@ def apply_branding_job(
             log.error("Could not POST failed for branding job %s: %s", job_id, exc)
 
 
-def download_image(url: str, ext: str = ".jpg") -> Path:
+def download_image(url: str, ext: str = ".jpg", *, api_base: str = "") -> Path:
     if not BRANDING_CACHE_DIR:
         raise ValueError("BRANDING_CACHE_DIR is not set")
-    if not is_trusted_url(url):
-        raise ValueError(f"Untrusted image URL rejected: {str(url)[:80]}")
+    if not is_trusted_url(url, api_base or None):
+        raise ValueError(f"Untrusted image URL rejected: {str(url)[:120]}")
 
     url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
     dest = BRANDING_CACHE_DIR / f"{url_hash}{ext}"
@@ -326,7 +337,12 @@ def _resolve_data_dir(data_dir: Path | None) -> Path:
     raise ValueError("data_dir is required for Windows display IPC")
 
 
-def _apply_wallpaper_windows(branding: dict[str, Any], *, data_dir: Path | None) -> None:
+def _apply_wallpaper_windows(
+    branding: dict[str, Any],
+    *,
+    data_dir: Path | None,
+    api_base: str = "",
+) -> None:
     url = branding.get("wallpaper_url")
     if not url:
         raise ValueError("wallpaper_url is empty")
@@ -342,7 +358,7 @@ def _apply_wallpaper_windows(branding: dict[str, Any], *, data_dir: Path | None)
     from display_ipc import wait_for_display_result, write_display_task
 
     fit = str(branding.get("wallpaper_fit") or "fill")
-    img_path = download_image(str(url), ".jpg")
+    img_path = download_image(str(url), ".jpg", api_base=api_base)
     fit_map = {
         "fill": (10, 0),
         "fit": (6, 0),
@@ -368,11 +384,11 @@ def _apply_wallpaper_windows(branding: dict[str, Any], *, data_dir: Path | None)
         raise RuntimeError(str(result.get("error") or "wallpaper failed"))
 
 
-def _apply_lockscreen_windows(branding: dict[str, Any]) -> None:
+def _apply_lockscreen_windows(branding: dict[str, Any], *, api_base: str = "") -> None:
     url = branding.get("lockscreen_url")
     if not url:
         raise ValueError("lockscreen_url is empty")
-    img_path = download_image(str(url), ".jpg")
+    img_path = download_image(str(url), ".jpg", api_base=api_base)
     path_escaped = str(img_path).replace("'", "''")
     ps = f"""
 $src = '{path_escaped}'
@@ -413,11 +429,11 @@ def _apply_screensaver_windows(branding: dict[str, Any], *, data_dir: Path | Non
         raise RuntimeError(str(result.get("error") or "screensaver failed"))
 
 
-def _apply_wallpaper_macos(branding: dict[str, Any]) -> None:
+def _apply_wallpaper_macos(branding: dict[str, Any], *, api_base: str = "") -> None:
     url = branding.get("wallpaper_url")
     if not url:
         raise ValueError("wallpaper_url is empty")
-    img_path = download_image(str(url), ".jpg")
+    img_path = download_image(str(url), ".jpg", api_base=api_base)
     script = f'''
 tell application "System Events"
   tell every desktop
@@ -435,11 +451,11 @@ end tell
         raise RuntimeError((result.stderr or result.stdout or "osascript failed")[:400])
 
 
-def _apply_lockscreen_macos(branding: dict[str, Any]) -> None:
+def _apply_lockscreen_macos(branding: dict[str, Any], *, api_base: str = "") -> None:
     url = branding.get("lockscreen_url")
     if not url:
         return
-    img_path = download_image(str(url), ".jpg")
+    img_path = download_image(str(url), ".jpg", api_base=api_base)
     subprocess.run(
         [
             "defaults",
@@ -507,11 +523,11 @@ def _linux_desktop_user() -> tuple[str, str] | None:
         return None
 
 
-def _apply_wallpaper_linux(branding: dict[str, Any]) -> None:
+def _apply_wallpaper_linux(branding: dict[str, Any], *, api_base: str = "") -> None:
     url = branding.get("wallpaper_url")
     if not url:
         raise ValueError("wallpaper_url is empty")
-    img_path = download_image(str(url), ".jpg")
+    img_path = download_image(str(url), ".jpg", api_base=api_base)
     pair = _linux_desktop_user()
     if not pair:
         log.warning("Linux wallpaper: no desktop user session found")
@@ -542,11 +558,11 @@ def _apply_wallpaper_linux(branding: dict[str, Any]) -> None:
         )
 
 
-def _apply_lockscreen_linux(branding: dict[str, Any]) -> None:
+def _apply_lockscreen_linux(branding: dict[str, Any], *, api_base: str = "") -> None:
     url = branding.get("lockscreen_url")
     if not url:
         return
-    img_path = download_image(str(url), ".jpg")
+    img_path = download_image(str(url), ".jpg", api_base=api_base)
     override_content = f"""
 [org.gnome.login-screen]
 logo='{img_path}'
@@ -615,22 +631,23 @@ def apply_wallpaper(
     branding: dict[str, Any],
     *,
     data_dir: Path | None = None,
+    api_base: str = "",
 ) -> None:
     if sys.platform == "win32":
-        _apply_wallpaper_windows(branding, data_dir=data_dir)
+        _apply_wallpaper_windows(branding, data_dir=data_dir, api_base=api_base)
     elif sys.platform == "darwin":
-        _apply_wallpaper_macos(branding)
+        _apply_wallpaper_macos(branding, api_base=api_base)
     else:
-        _apply_wallpaper_linux(branding)
+        _apply_wallpaper_linux(branding, api_base=api_base)
 
 
-def apply_lockscreen(branding: dict[str, Any]) -> None:
+def apply_lockscreen(branding: dict[str, Any], *, api_base: str = "") -> None:
     if sys.platform == "win32":
-        _apply_lockscreen_windows(branding)
+        _apply_lockscreen_windows(branding, api_base=api_base)
     elif sys.platform == "darwin":
-        _apply_lockscreen_macos(branding)
+        _apply_lockscreen_macos(branding, api_base=api_base)
     else:
-        _apply_lockscreen_linux(branding)
+        _apply_lockscreen_linux(branding, api_base=api_base)
 
 
 def apply_screensaver(

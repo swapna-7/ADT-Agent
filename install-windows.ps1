@@ -27,8 +27,49 @@ Copy-Item -Force $BinaryPath $installExe
 
 $helperSrc = Join-Path $repoRoot 'windows\user_helper.ps1'
 $helperDest = Join-Path $dataDir 'user_helper.ps1'
+$apiBase = if ($env:VIZHI_API_BASE) { $env:VIZHI_API_BASE.Trim().TrimEnd('/') } else { 'https://vizhi.rcsaware.com' }
+
 if (Test-Path $helperSrc) {
     Copy-Item -Force $helperSrc $helperDest
+    Write-Host "user_helper.ps1 copied from repo ($((Get-Item $helperDest).Length) bytes)"
+} else {
+    Write-Host "Registering user-session helper..."
+    try {
+        Invoke-WebRequest `
+            -Uri "$apiBase/api/agent/download/user-helper" `
+            -OutFile $helperDest `
+            -UseBasicParsing `
+            -TimeoutSec 30
+        Write-Host "user_helper.ps1 downloaded ($((Get-Item $helperDest).Length) bytes)"
+    } catch {
+        Write-Warning "Could not download user_helper.ps1: $_"
+        Write-Warning "Desktop alerts and wallpaper may not show on screen."
+    }
+}
+
+if (Test-Path $helperDest) {
+    # Space-safe -Command (matches user_helper_task.build_helper_task_arguments)
+    $quotedHelper = $helperDest.Replace("'", "''")
+    $helperArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"& '$quotedHelper'`""
+    $helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $helperArgs
+    $helperTrigger = New-ScheduledTaskTrigger -AtLogOn
+    $helperSettings = New-ScheduledTaskSettingsSet `
+        -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -RestartCount 999 `
+        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -StartWhenAvailable `
+        -AllowStartIfOnBatteries
+    Register-ScheduledTask `
+        -TaskName 'ADTAgentHelper' `
+        -Action $helperAction `
+        -Trigger $helperTrigger `
+        -Settings $helperSettings `
+        -Force | Out-Null
+    Write-Host "ADTAgentHelper task registered ($helperDest)"
+    Start-ScheduledTask -TaskName 'ADTAgentHelper' -ErrorAction SilentlyContinue
+    Write-Host 'ADTAgentHelper start requested'
+} else {
+    Write-Warning "user_helper.ps1 not found at $helperSrc and download failed — helper not registered"
 }
 
 # Restrict install dir to SYSTEM and Administrators.
@@ -66,7 +107,7 @@ Register-ScheduledTask `
     -Principal $principal `
     -Force | Out-Null
 
-# ADTAgentHelper is registered at runtime when a user logs in (agent 2.1.7+).
+# ADTAgentHelper is registered above when user_helper.ps1 is present.
 
 Write-Host ""
 Write-Host "==> Interactive enrollment (enter organisation code when prompted)"

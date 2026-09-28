@@ -1,6 +1,6 @@
 # ADT Agent
 
-Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.13).
+Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.14).
 
 ## Windows user-session display helper
 
@@ -12,6 +12,10 @@ The SYSTEM agent (`ADTAgent`) cannot show toasts or set wallpaper directly. A se
 
 From **2.1.10**, `user_helper.ps1` lives in **`C:\ProgramData\ADT Agent\`** (readable by the logged-in user). The SYSTEM agent registers and starts `ADTAgentHelper` via `schtasks /Run`. Pre-2.1.10 endpoints need a one-time manual fix while logged in at the console (see below).
 
+**2.1.14** trusts branding image URLs via urlparse (any `*.supabase.co` storage path + API host), without requiring `SUPABASE_URL` on the endpoint.
+
+**2.1.13** verifies `user_helper.ps1` in CI (`windows/scripts/validate-user-helper.ps1`) and reports display-helper health to the portal via `POST /api/agent/helper-status`.
+
 **2.1.10** allows Supabase Storage public branding URLs (`*.supabase.co/storage/v1/object/public/…`) so wallpaper/lockscreen jobs no longer fail with “Untrusted image URL”.
 
 After upgrading agents on a machine, verify in Admin PowerShell:
@@ -20,7 +24,7 @@ After upgrading agents on a machine, verify in Admin PowerShell:
 $install = "C:\Program Files\ADT Agent\adt-agent.exe"
 $staging = "C:\ProgramData\ADT Agent\update\adt-agent.exe"
 $backup  = "C:\Program Files\ADT Agent\adt-agent.old"
-$version = "2.1.13"   # GitHub release tag without v
+$version = "2.1.14"   # GitHub release tag without v
 
 Disable-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
 Disable-ScheduledTask -TaskName ADTAgentHelper -ErrorAction SilentlyContinue
