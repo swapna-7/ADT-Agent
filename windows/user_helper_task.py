@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
@@ -31,11 +30,9 @@ DATA_DIR = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ADT Agent"
 HELPER_INSTALL_PATH = DATA_DIR / "user_helper.ps1"
 HELPER_VERSION_MARKER = DATA_DIR / ".helper_version"
 HELPER_TASK_NAME = "ADTAgentHelper"
-DEBUG_LOG_PATH = DATA_DIR / "debug-5a7da5.log"
 HELPER_LOG_PATH = DATA_DIR / "user_helper.log"
 HELPER_LOG_FALLBACK = Path(os.environ.get("TEMP", r"C:\Windows\Temp")) / "adt-agent-user_helper.log"
 HELPER_LOG_START_MARKER = "ADTAgentHelper started"
-SESSION_ID = "5a7da5"
 HELPER_VERIFY_TIMEOUT_S = 15
 HELPER_VERIFY_POLL_S = 2.0
 
@@ -48,7 +45,7 @@ def build_helper_task_arguments(helper_path: Path | str) -> str:
     """Build Task Scheduler args that survive spaces in ProgramData\\ADT Agent\\."""
     quoted = str(helper_path).replace("'", "''")
     return (
-        "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden "
+        "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden "
         f"-Command \"& '{quoted}'\""
     )
 
@@ -65,45 +62,10 @@ def _resolve_user_helper_source() -> Path | None:
     return None
 
 
-def _debug_log(
-    hypothesis_id: str,
-    location: str,
-    message: str,
-    data: dict | None = None,
-    *,
-    run_id: str = "pre-fix",
-) -> None:
-    # #region agent log
-    payload = {
-        "sessionId": SESSION_ID,
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data or {},
-        "timestamp": int(time.time() * 1000),
-    }
-    line = json.dumps(payload, default=str)
-    try:
-        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-    except OSError:
-        pass
-    log.info("[debug-5a7da5] %s %s", message, data or {})
-    # #endregion
-
-
 def ensure_helper_script_present() -> Path | None:
     """Install bundled user_helper.ps1; version marker tracks agent release."""
     src = _resolve_user_helper_source()
     if src is None:
-        _debug_log(
-            "E",
-            "user_helper_task.py:ensure_helper_script_present",
-            "helper script source missing",
-            {"agent_version": AGENT_VERSION},
-        )
         log.warning("user_helper.ps1 not found in agent bundle")
         return None
 
@@ -118,12 +80,6 @@ def ensure_helper_script_present() -> Path | None:
         HELPER_VERSION_MARKER.parent.mkdir(parents=True, exist_ok=True)
         HELPER_VERSION_MARKER.write_text(AGENT_VERSION, encoding="utf-8")
         log.info("Installed user helper %s to %s", AGENT_VERSION, HELPER_INSTALL_PATH)
-        _debug_log(
-            "E",
-            "user_helper_task.py:ensure_helper_script_present",
-            "helper script installed",
-            {"version": AGENT_VERSION, "path": str(HELPER_INSTALL_PATH)},
-        )
     return HELPER_INSTALL_PATH
 
 
@@ -182,26 +138,12 @@ def verify_helper_started(
                 continue
             if baseline is None or mtime > baseline:
                 if _log_contains_start_marker(path):
-                    _debug_log(
-                        "F",
-                        "user_helper_task.py:verify_helper_started",
-                        "helper log confirmed",
-                        {"path": str(path)},
-                        run_id="post-fix",
-                    )
                     return True
                 if path == HELPER_LOG_PATH:
                     baseline_primary = mtime
                 else:
                     baseline_fallback = mtime
 
-    _debug_log(
-        "F",
-        "user_helper_task.py:verify_helper_started",
-        "helper log missing within timeout",
-        {"timeout_seconds": timeout_seconds},
-        run_id="post-fix",
-    )
     return False
 
 
@@ -262,30 +204,12 @@ def start_helper_task(*, task_name: str = HELPER_TASK_NAME) -> bool:
             check=False,
         )
     except Exception as exc:
-        _debug_log(
-            "B",
-            "user_helper_task.py:start_helper_task",
-            "schtasks run exception",
-            {"error": str(exc)},
-        )
         log.warning("Could not start ADTAgentHelper via schtasks: %s", exc)
         return False
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "schtasks /Run failed").strip()
-        _debug_log(
-            "B",
-            "user_helper_task.py:start_helper_task",
-            "schtasks run failed",
-            {"returncode": proc.returncode, "detail": detail[:500]},
-        )
         log.warning("schtasks /Run ADTAgentHelper failed: %s", detail)
         return False
-    _debug_log(
-        "C",
-        "user_helper_task.py:start_helper_task",
-        "schtasks run accepted",
-        {"task": task_name},
-    )
     log.info("Started ADTAgentHelper via schtasks")
     return True
 

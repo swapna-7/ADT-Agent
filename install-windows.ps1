@@ -50,23 +50,30 @@ if (Test-Path $helperSrc) {
 if (Test-Path $helperDest) {
     # Space-safe -Command (matches user_helper_task.build_helper_task_arguments)
     $quotedHelper = $helperDest.Replace("'", "''")
-    $helperArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"& '$quotedHelper'`""
+    $helperArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"& '$quotedHelper'`""
     $helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $helperArgs
-    $helperTrigger = New-ScheduledTaskTrigger -AtLogOn
+    $interactiveUser = (Get-CimInstance -ClassName Win32_ComputerSystem).UserName
+    if (-not $interactiveUser) {
+        $interactiveUser = "$env:USERDOMAIN\$env:USERNAME"
+    }
+    $helperTrigger = New-ScheduledTaskTrigger -AtLogOn -User $interactiveUser
     $helperSettings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit ([TimeSpan]::Zero) `
         -RestartCount 999 `
         -RestartInterval (New-TimeSpan -Minutes 1) `
         -StartWhenAvailable `
-        -AllowStartIfOnBatteries
+        -AllowStartIfOnBatteries `
+        -MultipleInstances IgnoreNew
+    $helperPrincipal = New-ScheduledTaskPrincipal -UserId $interactiveUser -LogonType Interactive
     Register-ScheduledTask `
         -TaskName 'ADTAgentHelper' `
         -Action $helperAction `
         -Trigger $helperTrigger `
         -Settings $helperSettings `
+        -Principal $helperPrincipal `
         -Force | Out-Null
-    Write-Host "ADTAgentHelper task registered ($helperDest)"
-    Start-ScheduledTask -TaskName 'ADTAgentHelper' -ErrorAction SilentlyContinue
+    Write-Host "ADTAgentHelper task registered ($helperDest) for $interactiveUser"
+    schtasks /Run /TN 'ADTAgentHelper' | Out-Null
     Write-Host 'ADTAgentHelper start requested'
 } else {
     Write-Warning "user_helper.ps1 not found at $helperSrc and download failed — helper not registered"

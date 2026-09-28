@@ -10,6 +10,7 @@ import pytest
 
 from display_ipc import (
     build_toast_xml,
+    clear_pending_file,
     helper_recently_active,
     pending_path,
     result_path,
@@ -42,6 +43,25 @@ def test_write_display_task_atomic_append(tmp_path: Path):
     write_display_task(tmp_path, {"type": "screensaver", "timeout_s": 600})
     pending = json.loads(pending_path(tmp_path).read_text(encoding="utf-8"))
     assert len(pending) == 2
+
+
+def test_write_display_task_skips_duplicate_id(tmp_path: Path):
+    task_id = write_display_task(tmp_path, {"id": "same-id", "type": "toast", "xml": "<toast/>"})
+    again = write_display_task(tmp_path, {"id": "same-id", "type": "toast", "xml": "<toast/>"})
+    assert again == task_id
+    pending = json.loads(pending_path(tmp_path).read_text(encoding="utf-8"))
+    assert len(pending) == 1
+
+
+def test_clear_pending_file_removes_queue(tmp_path: Path):
+    write_display_task(tmp_path, {"type": "toast", "xml": "<toast/>"})
+    assert pending_path(tmp_path).exists()
+    clear_pending_file(tmp_path)
+    pending = pending_path(tmp_path)
+    if pending.exists():
+        assert json.loads(pending.read_text(encoding="utf-8")) == []
+    else:
+        assert not pending.exists()
 
 
 def test_wait_for_display_result_finds_task(tmp_path: Path):

@@ -5,12 +5,25 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+$elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator
+)
+if (-not $elevated) {
+    throw @'
+Access denied: registering ADTAgentHelper requires Administrator PowerShell.
+1) Run this script in an Administrator PowerShell (copy + register).
+2) Then in a NORMAL (non-admin) PowerShell run:
+     schtasks /Run /TN ADTAgentHelper
+Do not start the task from the Administrator window — that leaves it Queued.
+'@
+}
+
 if (-not (Test-Path $HelperPath)) {
     throw "user_helper.ps1 not found at: $HelperPath"
 }
 
 # -File breaks when the path contains spaces (Task Scheduler splits on spaces). Use -Command.
-$psArg = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""& '$($HelperPath -replace '''','''''')'"""
+$psArg = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""& '$($HelperPath -replace '''','''''')'"""
 $helperAction = New-ScheduledTaskAction `
     -Execute 'powershell.exe' `
     -Argument $psArg
@@ -41,14 +54,7 @@ Register-ScheduledTask `
     -Principal $principal `
     -Force | Out-Null
 
-# Start-ScheduledTask is unreliable for AtLogOn tasks from an elevated shell — use schtasks.
-schtasks /Run /TN 'ADTAgentHelper' | Out-Null
-Start-Sleep -Seconds 3
-
 Write-Host "Registered ADTAgentHelper for $user"
-if (Test-Path (Join-Path $env:ProgramData 'ADT Agent\user_helper.log')) {
-    Get-Content (Join-Path $env:ProgramData 'ADT Agent\user_helper.log') -Tail 3
-} else {
-    Write-Host "Helper log not created yet — open a non-admin PowerShell and run:"
-    Write-Host "  powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$HelperPath`""
-}
+Write-Host 'Now open a NORMAL (non-admin) PowerShell and run:'
+Write-Host '  schtasks /Run /TN ADTAgentHelper'
+Write-Host 'Do not close any window that flashes; it should hide itself.'

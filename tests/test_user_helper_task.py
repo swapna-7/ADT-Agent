@@ -164,6 +164,7 @@ def test_user_helper_ps1_winrt_loads_are_single_line() -> None:
 def test_build_helper_task_arguments_quotes_spaces() -> None:
     args = uht.build_helper_task_arguments(r"C:\ProgramData\ADT Agent\user_helper.ps1")
     assert "-Command" in args
+    assert "-STA" in args
     assert "ADT Agent" in args
     assert "-File" not in args
 

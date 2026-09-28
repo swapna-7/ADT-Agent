@@ -7,6 +7,8 @@ executes them in the logged-in user's session and writes display_results.json.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -46,6 +48,32 @@ def result_path(data_dir: Path) -> Path:
     return data_dir / RESULT_FILE
 
 
+def _grant_users_modify(path: Path) -> None:
+    """Let the logged-on helper delete/overwrite SYSTEM-created IPC files."""
+    if os.name != "nt":
+        return
+    subprocess.run(
+        ["icacls", str(path), "/grant", "*S-1-5-32-545:(M)", "/Q"],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+
+def clear_pending_file(data_dir: Path) -> None:
+    pending = pending_path(data_dir)
+    try:
+        pending.unlink(missing_ok=True)
+        return
+    except OSError:
+        pass
+    try:
+        pending.write_text("[]", encoding="utf-8")
+        _grant_users_modify(pending)
+    except OSError:
+        pass
+
+
 def write_display_task(data_dir: Path, task: dict[str, Any]) -> str:
     """Append a display task and return its id."""
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -63,10 +91,14 @@ def write_display_task(data_dir: Path, task: dict[str, Any]) -> str:
         except Exception:
             existing = []
 
+    if any(str(item.get("id")) == task_id for item in existing):
+        return task_id
+
     existing.append(payload)
     tmp = pending.with_suffix(".tmp")
     tmp.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     tmp.replace(pending)
+    _grant_users_modify(pending)
     return task_id
 
 

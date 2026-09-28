@@ -35,7 +35,7 @@ function Test-UserHelperParse {
 function Get-HelperTaskArguments {
     param([Parameter(Mandatory)][string]$HelperPath)
     $quoted = $HelperPath.Replace("'", "''")
-    return "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""& '$quoted'"""
+    return "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""& '$quoted'"""
 }
 
 function Test-UserHelperSmoke {

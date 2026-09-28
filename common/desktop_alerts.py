@@ -209,6 +209,7 @@ def _notify_windows_via_ipc(
     try:
         from display_ipc import (
             build_toast_xml,
+            clear_pending_file,
             wait_for_display_result,
             write_display_task,
         )
@@ -221,6 +222,10 @@ def _notify_windows_via_ipc(
         {"type": "toast", "xml": build_toast_xml(title, message)},
     )
     result = wait_for_display_result(data_dir, task_id, timeout=25)
+    try:
+        clear_pending_file(data_dir)
+    except Exception:
+        pass
     if result is None:
         log.info("IPC toast timed out for task %s (is ADTAgentHelper running?)", task_id)
         return False
@@ -377,7 +382,8 @@ def _notify_windows(
 
     if data_dir is not None:
         try:
-            if _notify_windows_via_ipc(display_title, display_message, data_dir):
+            ipc_ok = _notify_windows_via_ipc(display_title, display_message, data_dir)
+            if ipc_ok:
                 return
         except Exception as exc:
             log.debug("IPC toast failed, falling back: %s", exc)

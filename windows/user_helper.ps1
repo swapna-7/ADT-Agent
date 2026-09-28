@@ -8,19 +8,145 @@ $DataDir = Join-Path $env:ProgramData 'ADT Agent'
 $PendingFile = Join-Path $DataDir 'pending_display.json'
 $ResultFile = Join-Path $DataDir 'display_results.json'
 $LogFile = Join-Path $DataDir 'user_helper.log'
+$ShownFile = Join-Path $DataDir 'shown_display_ids.json'
+$script:ShownIds = @{}
+$script:ConsoleFreed = $false
+
+function Hide-HelperWindow {
+    try {
+        if (-not ('VizhiNative.VizhiWin' -as [type])) {
+            Add-Type -Name VizhiWin -Namespace VizhiNative -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+[DllImport("kernel32.dll")] public static extern bool FreeConsole();
+[DllImport("kernel32.dll")] public static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add);
+[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+'@
+        }
+        $consoleHwnd = [VizhiNative.VizhiWin]::GetConsoleWindow()
+        $mainHwnd = [IntPtr]::Zero
+        try {
+            $proc = Get-Process -Id $PID -ErrorAction Stop
+            $mainHwnd = $proc.MainWindowHandle
+        } catch {}
+        foreach ($hwnd in @($consoleHwnd, $mainHwnd)) {
+            if ($hwnd -and $hwnd -ne [IntPtr]::Zero) {
+                [void][VizhiNative.VizhiWin]::ShowWindow($hwnd, 0)
+            }
+        }
+        if (-not $script:ConsoleFreed) {
+            [void][VizhiNative.VizhiWin]::SetConsoleCtrlHandler([IntPtr]::Zero, $true)
+            [void][VizhiNative.VizhiWin]::FreeConsole()
+            $script:ConsoleFreed = $true
+        }
+    } catch {}
+}
+
+function Write-SharedText {
+    param([string]$Path, [string]$Text)
+    $dir = Split-Path $Path
+    if ($dir -and -not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
+    $fs = [System.IO.File]::Open(
+        $Path,
+        [System.IO.FileMode]::Create,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::ReadWrite
+    )
+    try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
+}
+
+function Add-SharedLine {
+    param([string]$Path, [string]$Line)
+    $dir = Split-Path $Path
+    if ($dir -and -not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Line + [Environment]::NewLine)
+    $fs = [System.IO.File]::Open(
+        $Path,
+        [System.IO.FileMode]::Append,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::ReadWrite
+    )
+    try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
+}
+
+function Read-SharedText {
+    param([string]$Path)
+    $fs = [System.IO.File]::Open(
+        $Path,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::ReadWrite
+    )
+    try {
+        $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8, $true)
+        try { return $sr.ReadToEnd() } finally { $sr.Dispose() }
+    } finally { $fs.Dispose() }
+}
 
 function Write-HelperLog {
     param([string]$Message)
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $Message"
     try {
-        if (-not (Test-Path $DataDir)) {
-            New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-        }
-        Add-Content -Path $LogFile -Value $line -Encoding UTF8 -ErrorAction Stop
+        Add-SharedLine -Path $LogFile -Line $line
     } catch {
         $fallback = Join-Path $env:TEMP 'adt-agent-user_helper.log'
-        Add-Content -Path $fallback -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue
+        try { Add-SharedLine -Path $fallback -Line $line } catch {}
     }
+}
+
+function Load-ShownIds {
+    try {
+        if (-not (Test-Path $ShownFile)) { return }
+        $prev = (Read-SharedText -Path $ShownFile) | ConvertFrom-Json
+        foreach ($id in @($prev)) {
+            if ($id) { $script:ShownIds[[string]$id] = $true }
+        }
+    } catch {}
+}
+
+function Save-ShownIds {
+    try {
+        $ids = @($script:ShownIds.Keys)
+        if ($ids.Count -gt 200) {
+            $ids = $ids[($ids.Count - 200)..($ids.Count - 1)]
+        }
+        Write-SharedText -Path $ShownFile -Text ($ids | ConvertTo-Json)
+    } catch {}
+}
+
+function Clear-PendingQueue {
+    $deleted = $false
+    try {
+        Remove-Item $PendingFile -Force -ErrorAction Stop
+        $deleted = $true
+    } catch {}
+    # Do not overwrite SYSTEM-owned pending_display.json — that can hang the helper.
+    @{ deleted = $deleted; overwritten = $false }
+}
+
+function Mark-StalePendingIds {
+    $n = 0
+    if (-not (Test-Path $PendingFile)) { return $n }
+    try {
+        $raw = Read-SharedText -Path $PendingFile
+        if (-not $raw -or -not $raw.Trim() -or $raw.Trim() -eq '[]') { return $n }
+        $tasks = $raw | ConvertFrom-Json
+        if ($null -eq $tasks) { return $n }
+        if ($tasks -isnot [System.Array]) { $tasks = @($tasks) }
+        foreach ($task in $tasks) {
+            $tid = [string]$task.id
+            if ($tid -and -not $script:ShownIds.ContainsKey($tid)) {
+                $script:ShownIds[$tid] = $true
+                $n++
+            }
+        }
+        Save-ShownIds
+    } catch {}
+    return $n
 }
 
 function Ensure-ToastTypes {
@@ -30,81 +156,111 @@ function Ensure-ToastTypes {
     [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime]
 }
 
+Load-ShownIds
+Hide-HelperWindow | Out-Null
 Write-HelperLog 'ADTAgentHelper started (pid=' + $PID + ')'
+$staleMarked = Mark-StalePendingIds
+Write-HelperLog "Marked $staleMarked stale pending id(s) without toasting"
 
 while ($true) {
-    Start-Sleep -Seconds 10
+    Hide-HelperWindow | Out-Null
+    if (Test-Path $PendingFile) {
+        try {
+            $raw = Read-SharedText -Path $PendingFile
+            if ($raw -and $raw.Trim() -and $raw.Trim() -ne '[]') {
+                $tasks = $raw | ConvertFrom-Json
+                if ($null -ne $tasks) {
+                    if ($tasks -isnot [System.Array]) { $tasks = @($tasks) }
 
-    if (-not (Test-Path $PendingFile)) { continue }
+                    $results = @()
+                    $shownCount = 0
+                    $skippedCount = 0
 
-    try {
-        $raw = Get-Content $PendingFile -Raw -ErrorAction Stop
-        if (-not $raw.Trim()) { continue }
-        $tasks = $raw | ConvertFrom-Json
-        if ($null -eq $tasks) { continue }
-        if ($tasks -isnot [System.Array]) {
-            $tasks = @($tasks)
-        }
+                    foreach ($task in $tasks) {
+                        $tid = [string]$task.id
+                        if ($tid -and $script:ShownIds.ContainsKey($tid)) {
+                            $results += @{
+                                id     = $task.id
+                                status = 'ok'
+                                error  = 'skipped_duplicate'
+                            }
+                            $skippedCount++
+                            continue
+                        }
 
-        $results = @()
+                        $result = @{
+                            id     = $task.id
+                            status = 'ok'
+                            error  = $null
+                        }
 
-        foreach ($task in $tasks) {
-            $result = @{
-                id     = $task.id
-                status = 'ok'
-                error  = $null
-            }
-
-            try {
-                switch ($task.type) {
-                    'toast' {
-                        Ensure-ToastTypes
-                        $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-                        $xml.LoadXml([string]$task.xml)
-                        $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-                        # Must use a registered AppUserModelID — "Vizhi ADT" fails silently / Access Denied.
-                        $aumid = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
-                        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($aumid).Show($toast)
-                    }
-                    'wallpaper' {
-                        Add-Type @"
+                        try {
+                            $doWork = $true
+                            if ($task.type -eq 'toast' -and $shownCount -ge 1) {
+                                $doWork = $false
+                                $result.error = 'deferred_rate_limit'
+                            }
+                            if ($doWork) {
+                                switch ($task.type) {
+                                    'toast' {
+                                        Ensure-ToastTypes
+                                        $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+                                        $xml.LoadXml([string]$task.xml)
+                                        $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+                                        $aumid = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+                                        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($aumid).Show($toast)
+                                    }
+                                    'wallpaper' {
+                                        Add-Type @"
 using System.Runtime.InteropServices;
 public class VizhiWallpaper {
   [DllImport("user32.dll")]
   public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
 }
 "@
-                        $p = 'HKCU:\Control Panel\Desktop'
-                        Set-ItemProperty -Path $p -Name WallpaperStyle -Value ([int]$task.fit_code)
-                        Set-ItemProperty -Path $p -Name TileWallpaper -Value ([int]$task.tile_code)
-                        [VizhiWallpaper]::SystemParametersInfo(20, 0, [string]$task.path, 3) | Out-Null
+                                        $p = 'HKCU:\Control Panel\Desktop'
+                                        Set-ItemProperty -Path $p -Name WallpaperStyle -Value ([int]$task.fit_code)
+                                        Set-ItemProperty -Path $p -Name TileWallpaper -Value ([int]$task.tile_code)
+                                        [VizhiWallpaper]::SystemParametersInfo(20, 0, [string]$task.path, 3) | Out-Null
+                                    }
+                                    'screensaver' {
+                                        $p = 'HKCU:\Control Panel\Desktop'
+                                        Set-ItemProperty -Path $p -Name ScreenSaveActive -Value 1
+                                        Set-ItemProperty -Path $p -Name ScreenSaveTimeOut -Value ([int]$task.timeout_s)
+                                        Set-ItemProperty -Path $p -Name 'SCRNSAVE.EXE' `
+                                            "$env:SystemRoot\System32\Scrnsave.scr"
+                                        Set-ItemProperty -Path $p -Name ScreenSaverIsSecure -Value 1
+                                    }
+                                    default {
+                                        throw "Unknown task type: $($task.type)"
+                                    }
+                                }
+                            }
+                            if ($doWork) {
+                                if ($tid) { $script:ShownIds[$tid] = $true }
+                                $shownCount++
+                            } else {
+                                $skippedCount++
+                            }
+                        } catch {
+                            $result.status = 'error'
+                            $result.error = $_.Exception.Message
+                            Write-HelperLog "Task $($task.id) failed: $($_.Exception.Message)"
+                        }
+
+                        $results += $result
                     }
-                    'screensaver' {
-                        $p = 'HKCU:\Control Panel\Desktop'
-                        Set-ItemProperty -Path $p -Name ScreenSaveActive -Value 1
-                        Set-ItemProperty -Path $p -Name ScreenSaveTimeOut -Value ([int]$task.timeout_s)
-                        Set-ItemProperty -Path $p -Name 'SCRNSAVE.EXE' `
-                            "$env:SystemRoot\System32\Scrnsave.scr"
-                        Set-ItemProperty -Path $p -Name ScreenSaverIsSecure -Value 1
-                    }
-                    default {
-                        throw "Unknown task type: $($task.type)"
-                    }
+
+                    Write-SharedText -Path $ResultFile -Text ($results | ConvertTo-Json -Depth 4)
+                    Save-ShownIds
+                    Clear-PendingQueue | Out-Null
+                    Write-HelperLog "Processed $($results.Count) display task(s) shown=$shownCount skipped=$skippedCount"
                 }
-            } catch {
-                $result.status = 'error'
-                $result.error = $_.Exception.Message
-                Write-HelperLog "Task $($task.id) failed: $($_.Exception.Message)"
             }
-
-            $results += $result
+        } catch {
+            Write-HelperLog "Helper loop error: $_"
         }
-
-        $results | ConvertTo-Json -Depth 4 | Set-Content $ResultFile -Encoding UTF8
-        Remove-Item $PendingFile -Force -ErrorAction SilentlyContinue
-        Write-HelperLog "Processed $($results.Count) display task(s)"
-
-    } catch {
-        Write-HelperLog "Helper loop error: $_"
     }
+
+    Start-Sleep -Seconds 10
 }
