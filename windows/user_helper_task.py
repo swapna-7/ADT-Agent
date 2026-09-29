@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
@@ -31,11 +30,9 @@ DATA_DIR = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ADT Agent"
 HELPER_INSTALL_PATH = DATA_DIR / "user_helper.ps1"
 HELPER_VERSION_MARKER = DATA_DIR / ".helper_version"
 HELPER_TASK_NAME = "ADTAgentHelper"
-DEBUG_LOG_PATH = DATA_DIR / "debug-5a7da5.log"
 HELPER_LOG_PATH = DATA_DIR / "user_helper.log"
 HELPER_LOG_FALLBACK = Path(os.environ.get("TEMP", r"C:\Windows\Temp")) / "adt-agent-user_helper.log"
 HELPER_LOG_START_MARKER = "ADTAgentHelper started"
-SESSION_ID = "5a7da5"
 HELPER_VERIFY_TIMEOUT_S = 15
 HELPER_VERIFY_POLL_S = 2.0
 
@@ -65,45 +62,10 @@ def _resolve_user_helper_source() -> Path | None:
     return None
 
 
-def _debug_log(
-    hypothesis_id: str,
-    location: str,
-    message: str,
-    data: dict | None = None,
-    *,
-    run_id: str = "pre-fix",
-) -> None:
-    # #region agent log
-    payload = {
-        "sessionId": SESSION_ID,
-        "runId": run_id,
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data or {},
-        "timestamp": int(time.time() * 1000),
-    }
-    line = json.dumps(payload, default=str)
-    try:
-        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-    except OSError:
-        pass
-    log.info("[debug-5a7da5] %s %s", message, data or {})
-    # #endregion
-
-
 def ensure_helper_script_present() -> Path | None:
     """Install bundled user_helper.ps1; version marker tracks agent release."""
     src = _resolve_user_helper_source()
     if src is None:
-        _debug_log(
-            "E",
-            "user_helper_task.py:ensure_helper_script_present",
-            "helper script source missing",
-            {"agent_version": AGENT_VERSION},
-        )
         log.warning("user_helper.ps1 not found in agent bundle")
         return None
 
@@ -118,13 +80,24 @@ def ensure_helper_script_present() -> Path | None:
         HELPER_VERSION_MARKER.parent.mkdir(parents=True, exist_ok=True)
         HELPER_VERSION_MARKER.write_text(AGENT_VERSION, encoding="utf-8")
         log.info("Installed user helper %s to %s", AGENT_VERSION, HELPER_INSTALL_PATH)
-        _debug_log(
-            "E",
-            "user_helper_task.py:ensure_helper_script_present",
-            "helper script installed",
-            {"version": AGENT_VERSION, "path": str(HELPER_INSTALL_PATH)},
-        )
+        restart_helper_after_script_update()
     return HELPER_INSTALL_PATH
+
+
+def restart_helper_after_script_update() -> None:
+    """Reload user_helper.ps1 — the running process keeps the old script in memory."""
+    try:
+        subprocess.run(
+            ["schtasks", "/End", "/TN", HELPER_TASK_NAME],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception as exc:
+        log.warning("Could not end ADTAgentHelper: %s", exc)
+    time.sleep(2)
+    start_helper_task()
 
 
 def is_helper_running() -> bool:
@@ -182,26 +155,12 @@ def verify_helper_started(
                 continue
             if baseline is None or mtime > baseline:
                 if _log_contains_start_marker(path):
-                    _debug_log(
-                        "F",
-                        "user_helper_task.py:verify_helper_started",
-                        "helper log confirmed",
-                        {"path": str(path)},
-                        run_id="post-fix",
-                    )
                     return True
                 if path == HELPER_LOG_PATH:
                     baseline_primary = mtime
                 else:
                     baseline_fallback = mtime
 
-    _debug_log(
-        "F",
-        "user_helper_task.py:verify_helper_started",
-        "helper log missing within timeout",
-        {"timeout_seconds": timeout_seconds},
-        run_id="post-fix",
-    )
     return False
 
 
@@ -262,30 +221,12 @@ def start_helper_task(*, task_name: str = HELPER_TASK_NAME) -> bool:
             check=False,
         )
     except Exception as exc:
-        _debug_log(
-            "B",
-            "user_helper_task.py:start_helper_task",
-            "schtasks run exception",
-            {"error": str(exc)},
-        )
         log.warning("Could not start ADTAgentHelper via schtasks: %s", exc)
         return False
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "schtasks /Run failed").strip()
-        _debug_log(
-            "B",
-            "user_helper_task.py:start_helper_task",
-            "schtasks run failed",
-            {"returncode": proc.returncode, "detail": detail[:500]},
-        )
         log.warning("schtasks /Run ADTAgentHelper failed: %s", detail)
         return False
-    _debug_log(
-        "C",
-        "user_helper_task.py:start_helper_task",
-        "schtasks run accepted",
-        {"task": task_name},
-    )
     log.info("Started ADTAgentHelper via schtasks")
     return True
 
@@ -342,32 +283,14 @@ schtasks /Run /TN '{HELPER_TASK_NAME}' | Out-Null
             check=False,
         )
     except Exception as exc:
-        _debug_log(
-            "B",
-            "user_helper_task.py:register_helper_task",
-            "register subprocess exception",
-            {"user": user, "error": str(exc)},
-        )
         log.warning("ADTAgentHelper registration exception: %s", exc)
         return False
 
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "Failed to register user helper task").strip()
-        _debug_log(
-            "B",
-            "user_helper_task.py:register_helper_task",
-            "register failed",
-            {"user": user, "returncode": proc.returncode, "detail": detail[:500]},
-        )
         log.warning("ADTAgentHelper registration failed: %s", detail)
         return False
 
-    _debug_log(
-        "C",
-        "user_helper_task.py:register_helper_task",
-        "register succeeded",
-        {"user": user},
-    )
     log.info("Registered ADTAgentHelper for user: %s", user)
     start_helper_task()
     return True
@@ -388,38 +311,14 @@ def ensure_helper_task_registered(
 
     active_user = user_fn()
     if not active_user:
-        _debug_log(
-            "A",
-            "user_helper_task.py:ensure_helper_task_registered",
-            "no active interactive session — skip",
-            {},
-        )
         log.debug("No active interactive session — skipping helper registration this cycle")
         return
 
     current_principal = principal_fn()
-    _debug_log(
-        "D",
-        "user_helper_task.py:ensure_helper_task_registered",
-        "principal check",
-        {"active_user": active_user, "current_principal": current_principal},
-    )
 
     if current_principal and _principal_matches(current_principal, active_user):
         if is_helper_running():
-            _debug_log(
-                "D",
-                "user_helper_task.py:ensure_helper_task_registered",
-                "already registered — helper running",
-                {"user": active_user},
-            )
             return
-        _debug_log(
-            "D",
-            "user_helper_task.py:ensure_helper_task_registered",
-            "registered but helper not running — starting",
-            {"user": active_user},
-        )
         if start_helper_task():
             _verify_and_report(api_base, device_token)
         return
@@ -429,12 +328,6 @@ def ensure_helper_task_registered(
         if register_fn(active_user):
             _verify_and_report(api_base, device_token)
     except Exception as exc:
-        _debug_log(
-            "B",
-            "user_helper_task.py:ensure_helper_task_registered",
-            "register raised — will retry next cycle",
-            {"user": active_user, "error": str(exc)},
-        )
         log.warning("ADTAgentHelper registration error (will retry): %s", exc)
 
 

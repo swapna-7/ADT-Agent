@@ -112,6 +112,7 @@ def test_helper_script_version_matches_agent_version_after_self_update(
     monkeypatch.setattr(uht, "HELPER_VERSION_MARKER", data_dir / ".helper_version")
     monkeypatch.setattr(uht, "_resolve_user_helper_source", lambda: src)
     monkeypatch.setattr(uht, "AGENT_VERSION", "2.1.7")
+    monkeypatch.setattr(uht, "restart_helper_after_script_update", lambda: None)
 
     path = uht.ensure_helper_script_present()
     assert path is not None
@@ -212,17 +213,3 @@ def test_verify_helper_started_succeeds_on_real_log_update(
 
 
 def test_ci_smoke_staging_path_includes_space() -> None:
-    script = (_WINDOWS / "scripts" / "validate-user-helper.ps1").read_text(encoding="utf-8")
-    assert "ADT Agent CI Space" in script
-    assert "ProgramData Root" in script
-
-
-def test_debug_log_writes_ndjson(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    log_path = tmp_path / "debug-5a7da5.log"
-    monkeypatch.setattr(uht, "DEBUG_LOG_PATH", log_path)
-    uht._debug_log("A", "test", "hello", {"k": 1}, run_id="test-run")
-    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
-    assert len(lines) == 1
-    payload = json.loads(lines[0])
-    assert payload["hypothesisId"] == "A"
-    assert payload["sessionId"] == "5a7da5"

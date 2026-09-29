@@ -30,47 +30,6 @@ BRANDING_CACHE_DIR: Path | None = None
 SESSION_WAIT_TIMEOUT_S = 4 * 60 * 60  # 4 hours
 
 
-def _dbg(location: str, message: str, data: dict[str, Any], hyp: str) -> None:
-    # #region agent log
-    try:
-        import json
-        import time
-        import urllib.request
-
-        payload = {
-            "sessionId": "c15c98",
-            "hypothesisId": hyp,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        line = json.dumps(payload, default=str)
-        for p in (
-            Path(r"c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log"),
-            Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ADT Agent" / "debug-c15c98.log",
-        ):
-            try:
-                p.parent.mkdir(parents=True, exist_ok=True)
-                with p.open("a", encoding="utf-8") as fh:
-                    fh.write(line + "\n")
-            except OSError:
-                pass
-        req = urllib.request.Request(
-            "http://127.0.0.1:7622/ingest/60cf9d8b-4c11-4f0a-96a8-00e45250c36a",
-            data=line.encode(),
-            headers={
-                "Content-Type": "application/json",
-                "X-Debug-Session-Id": "c15c98",
-            },
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=2).read()
-    except Exception:
-        pass
-    # #endregion
-
-
 def is_trusted_url(url: str, api_base: str | None = "") -> bool:
     if not url:
         return False
@@ -230,22 +189,6 @@ def apply_branding_job(
                 wallpaper_status = _surface_skipped("disabled")
 
         if job_type in ("lockscreen", "all"):
-            url = str(branding.get("lockscreen_url") or "")
-            parsed = urllib.parse.urlparse(url)
-            # #region agent log
-            _dbg(
-                "branding.py:apply_branding_job",
-                "lockscreen branch",
-                {
-                    "jobType": job_type,
-                    "enabled": bool(branding.get("lockscreen_enabled")),
-                    "urlHost": parsed.hostname,
-                    "urlPathPrefix": (parsed.path or "")[:40],
-                    "hasUrl": bool(url),
-                },
-                "B",
-            )
-            # #endregion
             if branding.get("lockscreen_enabled"):
                 try:
                     apply_lockscreen(branding, api_base=api_base, data_dir=data_dir)
@@ -258,36 +201,12 @@ def apply_branding_job(
                         lockscreen_status = "failed"
                         hard_fail = True
                         error_parts.append(f"lockscreen:{exc}")
-                    # #region agent log
-                    _dbg(
-                        "branding.py:apply_branding_job",
-                        "lockscreen runtime",
-                        {"error": str(exc)[:200], "status": lockscreen_status},
-                        "B",
-                    )
-                    # #endregion
                 except Exception as exc:
                     lockscreen_status = "failed"
                     hard_fail = True
                     error_parts.append(f"lockscreen:{exc}")
-                    # #region agent log
-                    _dbg(
-                        "branding.py:apply_branding_job",
-                        "lockscreen failed",
-                        {"error": str(exc)[:200], "status": lockscreen_status},
-                        "B",
-                    )
-                    # #endregion
             else:
                 lockscreen_status = _surface_skipped("disabled")
-            # #region agent log
-            _dbg(
-                "branding.py:apply_branding_job",
-                "lockscreen result",
-                {"status": lockscreen_status},
-                "B",
-            )
-            # #endregion
 
         if job_type in ("screensaver", "all"):
             if branding.get("screensaver_enabled"):
@@ -536,21 +455,7 @@ def _apply_lockscreen_windows(
         has_interactive_session = lambda: True  # type: ignore[assignment]
 
     img_path = download_image(str(url), ".jpg", api_base=api_base)
-    parsed = urllib.parse.urlparse(str(url))
     web_info = _copy_lock_image_to_web_screen(img_path)
-    # #region agent log
-    _dbg(
-        "branding.py:_apply_lockscreen_windows",
-        "web screen copy",
-        {
-            "urlHost": parsed.hostname,
-            "cacheExists": img_path.exists(),
-            "cacheBytes": img_path.stat().st_size if img_path.exists() else 0,
-            **{k: web_info.get(k) for k in ("copied", "rc", "webBytes", "srcBytes", "error")},
-        },
-        "G",
-    )
-    # #endregion
     if not web_info.get("copied"):
         raise RuntimeError(
             web_info.get("error")
@@ -559,7 +464,8 @@ def _apply_lockscreen_windows(
         )
 
     if not has_interactive_session():
-        raise RuntimeError("pending_session")
+        log.warning("Lock screen image copied; helper spotlight apply waiting for session")
+        return
 
     from display_ipc import wait_for_display_result, write_display_task
     resolved_dir = _resolve_data_dir(data_dir)
@@ -571,22 +477,10 @@ def _apply_lockscreen_windows(
         },
     )
     result = wait_for_display_result(resolved_dir, task_id, timeout=30)
-    # #region agent log
-    _dbg(
-        "branding.py:_apply_lockscreen_windows",
-        "after helper apply",
-        {
-            "taskId": task_id,
-            "resultStatus": None if result is None else result.get("status"),
-            "resultError": None if result is None else str(result.get("error") or "")[:160],
-        },
-        "A",
-    )
-    # #endregion
     if result is None:
-        raise RuntimeError("pending_session")
-    if result.get("status") == "error":
-        raise RuntimeError(str(result.get("error") or "lockscreen failed"))
+        log.warning("lockscreen helper timed out after web screen copy")
+    elif result.get("status") == "error":
+        log.warning("lockscreen helper: %s", result.get("error"))
 
     # Pro/Enterprise policy is extra; Home ignores it. Do not fail the user-session apply.
     path_escaped = str(img_path).replace("'", "''")
