@@ -30,6 +30,47 @@ BRANDING_CACHE_DIR: Path | None = None
 SESSION_WAIT_TIMEOUT_S = 4 * 60 * 60  # 4 hours
 
 
+def _dbg(location: str, message: str, data: dict[str, Any], hyp: str) -> None:
+    # #region agent log
+    try:
+        import json
+        import time
+        import urllib.request
+
+        payload = {
+            "sessionId": "c15c98",
+            "hypothesisId": hyp,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        line = json.dumps(payload, default=str)
+        for p in (
+            Path(r"c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log"),
+            Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ADT Agent" / "debug-c15c98.log",
+        ):
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                with p.open("a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+            except OSError:
+                pass
+        req = urllib.request.Request(
+            "http://127.0.0.1:7622/ingest/60cf9d8b-4c11-4f0a-96a8-00e45250c36a",
+            data=line.encode(),
+            headers={
+                "Content-Type": "application/json",
+                "X-Debug-Session-Id": "c15c98",
+            },
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=2).read()
+    except Exception:
+        pass
+    # #endregion
+
+
 def is_trusted_url(url: str, api_base: str | None = "") -> bool:
     if not url:
         return False
@@ -189,16 +230,64 @@ def apply_branding_job(
                 wallpaper_status = _surface_skipped("disabled")
 
         if job_type in ("lockscreen", "all"):
+            url = str(branding.get("lockscreen_url") or "")
+            parsed = urllib.parse.urlparse(url)
+            # #region agent log
+            _dbg(
+                "branding.py:apply_branding_job",
+                "lockscreen branch",
+                {
+                    "jobType": job_type,
+                    "enabled": bool(branding.get("lockscreen_enabled")),
+                    "urlHost": parsed.hostname,
+                    "urlPathPrefix": (parsed.path or "")[:40],
+                    "hasUrl": bool(url),
+                },
+                "B",
+            )
+            # #endregion
             if branding.get("lockscreen_enabled"):
                 try:
-                    apply_lockscreen(branding, api_base=api_base)
+                    apply_lockscreen(branding, api_base=api_base, data_dir=data_dir)
                     lockscreen_status = "completed"
+                except RuntimeError as exc:
+                    if str(exc) == "pending_session":
+                        lockscreen_status = "pending_session"
+                        pending_session = True
+                    else:
+                        lockscreen_status = "failed"
+                        hard_fail = True
+                        error_parts.append(f"lockscreen:{exc}")
+                    # #region agent log
+                    _dbg(
+                        "branding.py:apply_branding_job",
+                        "lockscreen runtime",
+                        {"error": str(exc)[:200], "status": lockscreen_status},
+                        "B",
+                    )
+                    # #endregion
                 except Exception as exc:
                     lockscreen_status = "failed"
                     hard_fail = True
                     error_parts.append(f"lockscreen:{exc}")
+                    # #region agent log
+                    _dbg(
+                        "branding.py:apply_branding_job",
+                        "lockscreen failed",
+                        {"error": str(exc)[:200], "status": lockscreen_status},
+                        "B",
+                    )
+                    # #endregion
             else:
                 lockscreen_status = _surface_skipped("disabled")
+            # #region agent log
+            _dbg(
+                "branding.py:apply_branding_job",
+                "lockscreen result",
+                {"status": lockscreen_status},
+                "B",
+            )
+            # #endregion
 
         if job_type in ("screensaver", "all"):
             if branding.get("screensaver_enabled"):
@@ -384,11 +473,122 @@ def _apply_wallpaper_windows(
         raise RuntimeError(str(result.get("error") or "wallpaper failed"))
 
 
-def _apply_lockscreen_windows(branding: dict[str, Any], *, api_base: str = "") -> None:
+def _copy_lock_image_to_web_screen(img_path: Path) -> dict[str, Any]:
+    """Replace the live Win11 lock image. OriginalImageFile points at Web\\Screen\\img100.jpg."""
+    web = (
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "Web"
+        / "Screen"
+        / "img100.jpg"
+    )
+    info: dict[str, Any] = {
+        "webPath": str(web),
+        "copied": False,
+        "srcBytes": img_path.stat().st_size if img_path.exists() else 0,
+    }
+    src = str(img_path).replace("'", "''")
+    dest = str(web).replace("'", "''")
+    ps = f"""
+$src = '{src}'
+$dest = '{dest}'
+takeown /f $dest | Out-Null
+icacls $dest /grant '*S-1-5-18:(F)' /grant '*S-1-5-32-544:(F)' /Q | Out-Null
+Copy-Item -LiteralPath $src -Destination $dest -Force
+(Get-Item -LiteralPath $dest).Length
+"""
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NonInteractive",
+                "-NoProfile",
+                "-Command",
+                ps,
+            ],
+            timeout=30,
+            capture_output=True,
+            text=True,
+        )
+        info["rc"] = result.returncode
+        info["stdout"] = (result.stdout or "").strip()[:80]
+        info["stderr"] = (result.stderr or "").strip()[:160]
+        if web.exists():
+            info["webBytes"] = web.stat().st_size
+            info["copied"] = result.returncode == 0 and info["webBytes"] == info["srcBytes"]
+    except Exception as exc:
+        info["error"] = str(exc)[:200]
+    return info
+
+
+def _apply_lockscreen_windows(
+    branding: dict[str, Any],
+    *,
+    data_dir: Path | None,
+    api_base: str = "",
+) -> None:
     url = branding.get("lockscreen_url")
     if not url:
         raise ValueError("lockscreen_url is empty")
+
+    try:
+        from win_session import has_interactive_session
+    except ImportError:
+        has_interactive_session = lambda: True  # type: ignore[assignment]
+
     img_path = download_image(str(url), ".jpg", api_base=api_base)
+    parsed = urllib.parse.urlparse(str(url))
+    web_info = _copy_lock_image_to_web_screen(img_path)
+    # #region agent log
+    _dbg(
+        "branding.py:_apply_lockscreen_windows",
+        "web screen copy",
+        {
+            "urlHost": parsed.hostname,
+            "cacheExists": img_path.exists(),
+            "cacheBytes": img_path.stat().st_size if img_path.exists() else 0,
+            **{k: web_info.get(k) for k in ("copied", "rc", "webBytes", "srcBytes", "error")},
+        },
+        "G",
+    )
+    # #endregion
+    if not web_info.get("copied"):
+        raise RuntimeError(
+            web_info.get("error")
+            or web_info.get("stderr")
+            or "failed to replace Web\\Screen\\img100.jpg"
+        )
+
+    if not has_interactive_session():
+        raise RuntimeError("pending_session")
+
+    from display_ipc import wait_for_display_result, write_display_task
+    resolved_dir = _resolve_data_dir(data_dir)
+    task_id = write_display_task(
+        resolved_dir,
+        {
+            "type": "lockscreen",
+            "path": str(img_path),
+        },
+    )
+    result = wait_for_display_result(resolved_dir, task_id, timeout=30)
+    # #region agent log
+    _dbg(
+        "branding.py:_apply_lockscreen_windows",
+        "after helper apply",
+        {
+            "taskId": task_id,
+            "resultStatus": None if result is None else result.get("status"),
+            "resultError": None if result is None else str(result.get("error") or "")[:160],
+        },
+        "A",
+    )
+    # #endregion
+    if result is None:
+        raise RuntimeError("pending_session")
+    if result.get("status") == "error":
+        raise RuntimeError(str(result.get("error") or "lockscreen failed"))
+
+    # Pro/Enterprise policy is extra; Home ignores it. Do not fail the user-session apply.
     path_escaped = str(img_path).replace("'", "''")
     ps = f"""
 $src = '{path_escaped}'
@@ -396,27 +596,24 @@ $dest = "$env:SystemRoot\\System32\\oobe\\info\\backgrounds\\backgroundDefault.j
 New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
 Copy-Item $src $dest -Force
 $lockPath = $dest
-
 $oem = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\LogonUI\\Background'
 New-Item -Force -Path $oem | Out-Null
 Set-ItemProperty -Path $oem -Name OEMBackground -Value 1
-
 $pol = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization'
 New-Item -Force -Path $pol | Out-Null
 Set-ItemProperty -Path $pol -Name LockScreenImage -Value $lockPath
 Set-ItemProperty -Path $pol -Name NoChangingLockScreen -Value 1
-
 $sys = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\PersonalizationCSP'
 New-Item -Force -Path $sys | Out-Null
 Set-ItemProperty -Path $sys -Name LockScreenImagePath -Value $lockPath
 Set-ItemProperty -Path $sys -Name LockScreenImageUrl -Value $lockPath
 Set-ItemProperty -Path $sys -Name LockScreenImageStatus -Value 1
-
-gpupdate /force /target:computer | Out-Null
-Write-Host "Lock screen applied: $lockPath"
 """
-    _ps_run(ps, timeout=90)
-    log.info("Lock screen applied: %s", img_path)
+    try:
+        _ps_run(ps, timeout=30)
+    except Exception as exc:
+        log.warning("HKLM lockscreen policy extra apply failed: %s", exc)
+    log.info("Lock screen applied via helper: %s", img_path)
 
 
 def apply_lock_on_idle_windows(branding: dict[str, Any]) -> None:
@@ -655,9 +852,14 @@ def apply_wallpaper(
         _apply_wallpaper_linux(branding, api_base=api_base)
 
 
-def apply_lockscreen(branding: dict[str, Any], *, api_base: str = "") -> None:
+def apply_lockscreen(
+    branding: dict[str, Any],
+    *,
+    api_base: str = "",
+    data_dir: Path | None = None,
+) -> None:
     if sys.platform == "win32":
-        _apply_lockscreen_windows(branding, api_base=api_base)
+        _apply_lockscreen_windows(branding, data_dir=data_dir, api_base=api_base)
     elif sys.platform == "darwin":
         _apply_lockscreen_macos(branding, api_base=api_base)
     else:

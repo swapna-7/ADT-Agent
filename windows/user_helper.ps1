@@ -106,6 +106,61 @@ function Write-HelperLog {
     }
 }
 
+function Get-LockscreenProbe {
+    $dest = Join-Path $env:SystemRoot 'System32\oobe\info\backgrounds\backgroundDefault.jpg'
+    $info = @{
+        destExists = [bool](Test-Path $dest)
+        destBytes = 0
+        destMtime = $null
+        img100Bytes = 0
+        img100Mtime = $null
+        originalImage = $null
+        edition = $null
+        product = $null
+        spotlight = $null
+        oemBackground = $null
+        gpoLockSet = $false
+        cspSet = $false
+    }
+    if ($info.destExists) {
+        $f = Get-Item $dest
+        $info.destBytes = [int64]$f.Length
+        $info.destMtime = $f.LastWriteTimeUtc.ToString('o')
+    }
+    $img100 = Join-Path $env:SystemRoot 'Web\Screen\img100.jpg'
+    if (Test-Path -LiteralPath $img100) {
+        $w = Get-Item -LiteralPath $img100
+        $info.img100Bytes = [int64]$w.Length
+        $info.img100Mtime = $w.LastWriteTimeUtc.ToString('o')
+    }
+    try {
+        $null = [Windows.System.UserProfile.LockScreen,Windows.System.UserProfile,ContentType=WindowsRuntime]
+        $info.originalImage = [string][Windows.System.UserProfile.LockScreen]::OriginalImageFile
+    } catch {}
+    try {
+        $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+        $info.edition = [string]$cv.EditionID
+        $info.product = [string]$cv.ProductName
+    } catch {}
+    try {
+        $sp = Get-ItemProperty 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' -ErrorAction SilentlyContinue
+        $info.spotlight = [int]$sp.RotatingLockScreenEnabled
+    } catch {}
+    try {
+        $oem = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background' -ErrorAction SilentlyContinue
+        $info.oemBackground = [int]$oem.OEMBackground
+    } catch {}
+    try {
+        $gpo = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization' -ErrorAction SilentlyContinue
+        $info.gpoLockSet = [bool]$gpo.LockScreenImage
+    } catch {}
+    try {
+        $csp = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP' -ErrorAction SilentlyContinue
+        $info.cspSet = [bool]$csp.LockScreenImagePath
+    } catch {}
+    return $info
+}
+
 function Write-DebugLog {
     param([string]$HypothesisId, [string]$Location, [string]$Message, $Data)
     # #region agent log
@@ -210,8 +265,13 @@ Write-DebugLog -HypothesisId 'D' -Location 'user_helper.ps1:start-drain' -Messag
     pid = $PID
 }
 
+$script:LastLockProbe = Get-Date '2000-01-01'
 while ($true) {
     Hide-HelperWindow | Out-Null
+    if ((Get-Date) -gt $script:LastLockProbe.AddSeconds(45)) {
+        $script:LastLockProbe = Get-Date
+        Write-DebugLog -HypothesisId 'A' -Location 'user_helper.ps1:lockscreen-probe' -Message 'lockscreen machine state' -Data (Get-LockscreenProbe)
+    }
     if (Test-Path $PendingFile) {
         try {
             $raw = Read-SharedText -Path $PendingFile
@@ -279,6 +339,33 @@ public class VizhiWallpaper {
                                         Set-ItemProperty -Path $p -Name 'SCRNSAVE.EXE' `
                                             "$env:SystemRoot\System32\Scrnsave.scr"
                                         Set-ItemProperty -Path $p -Name ScreenSaverIsSecure -Value 1
+                                    }
+                                    'lockscreen' {
+                                        $img = [string]$task.path
+                                        if (-not (Test-Path -LiteralPath $img)) { throw "lockscreen image missing" }
+                                        $cdm = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'
+                                        New-Item -Path $cdm -Force | Out-Null
+                                        Set-ItemProperty -Path $cdm -Name RotatingLockScreenEnabled -Value 0
+                                        Set-ItemProperty -Path $cdm -Name RotatingLockScreenOverlayEnabled -Value 0
+                                        Add-Type -AssemblyName System.Runtime.WindowsRuntime
+                                        $null = [Windows.System.UserProfile.LockScreen,Windows.System.UserProfile,ContentType=WindowsRuntime]
+                                        $null = [Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime]
+                                        $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+                                        $asTaskAction = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and -not $_.IsGenericMethod })[0]
+                                        $fileOp = [Windows.Storage.StorageFile]::GetFileFromPathAsync($img)
+                                        $fileTask = $asTaskGeneric.MakeGenericMethod([Windows.Storage.StorageFile]).Invoke($null, @($fileOp))
+                                        $fileTask.Wait()
+                                        if ($fileTask.IsFaulted) { throw $fileTask.Exception.GetBaseException().Message }
+                                        $setOp = [Windows.System.UserProfile.LockScreen]::SetImageFileAsync($fileTask.Result)
+                                        $setTask = $asTaskAction.Invoke($null, @($setOp))
+                                        $setTask.Wait()
+                                        if ($setTask.IsFaulted) { throw $setTask.Exception.GetBaseException().Message }
+                                        Write-DebugLog -HypothesisId 'F' -Location 'user_helper.ps1:lockscreen' -Message 'applied lockscreen via user session' -Data @{
+                                            pathExists = $true
+                                            spotlight = 0
+                                            originalImage = [string][Windows.System.UserProfile.LockScreen]::OriginalImageFile
+                                            runId = 'post-fix'
+                                        }
                                     }
                                     default {
                                         throw "Unknown task type: $($task.type)"

@@ -159,6 +159,7 @@ def test_user_helper_ps1_winrt_loads_are_single_line() -> None:
     script = (_WINDOWS / "user_helper.ps1").read_text(encoding="utf-8")
     assert "ToastNotificationManager,\n" not in script
     assert "ToastNotificationManager, Windows.UI.Notifications" in script
+    assert "LockScreen,Windows.System.UserProfile,ContentType=WindowsRuntime" in script
 
 
 def test_build_helper_task_arguments_quotes_spaces() -> None:

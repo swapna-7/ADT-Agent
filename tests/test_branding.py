@@ -67,6 +67,68 @@ def test_branding_wallpaper_windows_uses_display_ipc(tmp_path: Path):
     assert tasks[0]["fit_code"] == "10"
 
 
+def test_branding_lockscreen_windows_uses_display_ipc(tmp_path: Path):
+    branding.BRANDING_CACHE_DIR = tmp_path / "branding"
+    branding.BRANDING_CACHE_DIR.mkdir(parents=True)
+    img = branding.BRANDING_CACHE_DIR / "lock.jpg"
+    img.write_bytes(b"fake-image")
+
+    tasks: list[dict] = []
+
+    def fake_write(_data_dir, task):
+        tasks.append(task)
+        return "task-lock"
+
+    with (
+        patch("branding.sys.platform", "win32"),
+        patch("branding.download_image", return_value=img),
+        patch("win_session.has_interactive_session", return_value=True),
+        patch("display_ipc.write_display_task", side_effect=fake_write),
+        patch(
+            "display_ipc.wait_for_display_result",
+            return_value={"id": "task-lock", "status": "ok"},
+        ),
+        patch(
+            "branding._copy_lock_image_to_web_screen",
+            return_value={"copied": True, "rc": 0, "webBytes": 10, "srcBytes": 10},
+        ),
+        patch("branding._ps_run"),
+    ):
+        branding.apply_lockscreen(
+            {"lockscreen_url": "https://example.test/lock.jpg"},
+            data_dir=tmp_path,
+        )
+
+    assert len(tasks) == 1
+    assert tasks[0]["type"] == "lockscreen"
+    assert tasks[0]["path"] == str(img)
+
+
+def test_lockscreen_windows_fails_when_web_screen_copy_fails(tmp_path: Path):
+    branding.BRANDING_CACHE_DIR = tmp_path / "branding"
+    branding.BRANDING_CACHE_DIR.mkdir(parents=True)
+    img = branding.BRANDING_CACHE_DIR / "lock.jpg"
+    img.write_bytes(b"fake-image")
+
+    with (
+        patch("branding.sys.platform", "win32"),
+        patch("branding.download_image", return_value=img),
+        patch(
+            "branding._copy_lock_image_to_web_screen",
+            return_value={"copied": False, "rc": 1, "stderr": "Access denied"},
+        ),
+    ):
+        try:
+            branding.apply_lockscreen(
+                {"lockscreen_url": "https://example.test/lock.jpg"},
+                data_dir=tmp_path,
+            )
+            raised = False
+        except RuntimeError as exc:
+            raised = "img100" in str(exc) or "Access denied" in str(exc)
+    assert raised
+
+
 def test_download_image_http_error(tmp_path: Path):
     branding.BRANDING_CACHE_DIR = tmp_path / "branding"
     branding.BRANDING_CACHE_DIR.mkdir(parents=True)
