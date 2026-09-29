@@ -983,9 +983,14 @@ def main() -> None:
         default="",
         help="Vizhi portal URL for enrollment (defaults to the URL baked into this build).",
     )
+    parser.add_argument(
+        "--enroll-only",
+        action="store_true",
+        help="Enroll from config.json and exit (used by Vizhi Agent Setup).",
+    )
     args = parser.parse_args()
 
-    bootstrap = is_frozen() and not is_running_from_install_dir()
+    bootstrap = is_frozen() and not is_running_from_install_dir() and not args.enroll_only
     if bootstrap:
         if not is_admin():
             print(
@@ -1019,6 +1024,30 @@ def main() -> None:
     env = load_env(find_env_file())
     local_config = load_local_config(config_file)
     api_base = resolve_api_base(local_config, env, override=args.api)
+
+    if args.enroll_only:
+        verbose = is_truthy(os.getenv("VERBOSE", env.get("VERBOSE", "0")))
+        console_log = is_truthy(os.getenv("CONSOLE_LOG", env.get("CONSOLE_LOG", "1")))
+        setup_logging(log_file, verbose=verbose, console_log=console_log)
+        if not needs_enrollment(local_config):
+            logging.info("Already enrolled — exiting")
+            raise SystemExit(0)
+        try:
+            prompt_and_enroll(
+                api_base,
+                config_file,
+                AGENT_VERSION,
+                code=args.code or None,
+                name=args.name or None,
+                local_config=local_config,
+            )
+        except SystemExit:
+            raise
+        except Exception as exc:
+            logging.exception("Enrollment failed: %s", exc)
+            raise SystemExit(1) from exc
+        logging.info("Enrollment complete — exiting for installer")
+        raise SystemExit(0)
 
     if needs_enrollment(local_config):
         enrolled = prompt_and_enroll(

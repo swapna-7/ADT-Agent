@@ -29,7 +29,7 @@ def test_enrollment_code_from_config_exits_without_tty_or_code(monkeypatch: pyte
     assert exc.value.code == 2
 
 
-def test_enroll_preserves_enrollment_code_in_written_config(tmp_path: Path):
+def test_enroll_drops_enrollment_code_after_success(tmp_path: Path):
     config_path = tmp_path / "config.json"
     with patch("first_run.enroll") as mock_enroll:
         mock_enroll.return_value = {
@@ -45,8 +45,11 @@ def test_enroll_preserves_enrollment_code_in_written_config(tmp_path: Path):
                 "VZ-ABCD-EFGH-IJKL",
                 existing_config={"ENROLLMENT_CODE": "VZ-ABCD-EFGH-IJKL", "AGENT_AUTO_UPDATE": "1"},
             )
-    assert result["ENROLLMENT_CODE"] == "VZ-ABCD-EFGH-IJKL"
+    assert "ENROLLMENT_CODE" not in result
     assert result["DEVICE_TOKEN"] == "vzd_test"
+    written = config_path.read_text(encoding="utf-8")
+    assert "ENROLLMENT_CODE" not in written
+    assert "vzd_test" in written
 
 
 def test_prompt_and_enroll_uses_baked_in_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

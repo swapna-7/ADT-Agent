@@ -92,7 +92,6 @@ def enroll_with_code(
     config: dict[str, Any] = {
         "ENDPOINT_ID": result["ENDPOINT_ID"],
         "DEVICE_TOKEN": result["DEVICE_TOKEN"],
-        "ENROLLMENT_CODE": normalized,
         "API_BASE": (api_base or "").strip().rstrip("/"),
         "ROLE": result.get("ROLE") or role or "",
         "MACHINE_GUID": guid or "",

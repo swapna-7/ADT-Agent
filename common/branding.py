@@ -1,4 +1,4 @@
-"""Wallpaper / lockscreen / screensaver branding applied from portal jobs."""
+"""Wallpaper / lockscreen / lock-on-idle branding applied from portal jobs."""
 
 from __future__ import annotations
 
@@ -395,38 +395,52 @@ $src = '{path_escaped}'
 $dest = "$env:SystemRoot\\System32\\oobe\\info\\backgrounds\\backgroundDefault.jpg"
 New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
 Copy-Item $src $dest -Force
-$path = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization'
-New-Item -Force -Path $path | Out-Null
-Set-ItemProperty -Path $path -Name LockScreenImage -Value $dest
-Set-ItemProperty -Path $path -Name NoChangingLockScreen -Value 1
+$lockPath = $dest
+
+$oem = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\LogonUI\\Background'
+New-Item -Force -Path $oem | Out-Null
+Set-ItemProperty -Path $oem -Name OEMBackground -Value 1
+
+$pol = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization'
+New-Item -Force -Path $pol | Out-Null
+Set-ItemProperty -Path $pol -Name LockScreenImage -Value $lockPath
+Set-ItemProperty -Path $pol -Name NoChangingLockScreen -Value 1
+
+$sys = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\PersonalizationCSP'
+New-Item -Force -Path $sys | Out-Null
+Set-ItemProperty -Path $sys -Name LockScreenImagePath -Value $lockPath
+Set-ItemProperty -Path $sys -Name LockScreenImageUrl -Value $lockPath
+Set-ItemProperty -Path $sys -Name LockScreenImageStatus -Value 1
+
+gpupdate /force /target:computer | Out-Null
+Write-Host "Lock screen applied: $lockPath"
 """
-    _ps_run(ps)
+    _ps_run(ps, timeout=90)
+    log.info("Lock screen applied: %s", img_path)
+
+
+def apply_lock_on_idle_windows(branding: dict[str, Any]) -> None:
+    """Lock the session after idle using the screensaver_timeout_s branding field."""
+    timeout_s = int(branding.get("screensaver_timeout_s") or 600)
+    timeout_min = max(1, timeout_s // 60)
+    timeout_s_actual = timeout_min * 60
+    ps = f"""
+$p = 'HKCU:\\Control Panel\\Desktop'
+Set-ItemProperty -Path $p -Name ScreenSaveActive -Value 1
+Set-ItemProperty -Path $p -Name ScreenSaveTimeOut -Value {timeout_s_actual}
+Set-ItemProperty -Path $p -Name ScreenSaverIsSecure -Value 1
+Set-ItemProperty -Path $p -Name 'SCRNSAVE.EXE' -Value "$env:SystemRoot\\System32\\scrnsave.scr"
+powercfg /setacvalueindex SCHEME_CURRENT SUB_NONE CONSOLELOCK {timeout_s_actual}
+powercfg /setdcvalueindex SCHEME_CURRENT SUB_NONE CONSOLELOCK {timeout_s_actual}
+powercfg /setactive SCHEME_CURRENT
+Write-Host "Lock on idle set: {timeout_min} minutes"
+"""
+    _ps_run(ps, timeout=30)
+    log.info("Lock on idle set to %s minutes", timeout_min)
 
 
 def _apply_screensaver_windows(branding: dict[str, Any], *, data_dir: Path | None) -> None:
-    timeout = int(branding.get("screensaver_timeout_s") or 600)
-    timeout = max(60, min(timeout, 3600))
-
-    try:
-        from win_session import has_interactive_session
-    except ImportError:
-        has_interactive_session = lambda: True  # type: ignore[assignment]
-
-    if not has_interactive_session():
-        raise RuntimeError("pending_session")
-
-    from display_ipc import wait_for_display_result, write_display_task
-
-    resolved_dir = _resolve_data_dir(data_dir)
-    task_id = write_display_task(
-        resolved_dir,
-        {"type": "screensaver", "timeout_s": timeout},
-    )
-    result = wait_for_display_result(resolved_dir, task_id, timeout=30)
-    if result is None:
-        raise RuntimeError("pending_session")
-    if result.get("status") == "error":
-        raise RuntimeError(str(result.get("error") or "screensaver failed"))
+    apply_lock_on_idle_windows(branding)
 
 
 def _apply_wallpaper_macos(branding: dict[str, Any], *, api_base: str = "") -> None:
