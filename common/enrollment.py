@@ -12,6 +12,7 @@ the binary on the same machine re-enrolls into the same endpoint row, preserving
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform as platform_mod
@@ -20,6 +21,7 @@ import socket
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -238,6 +240,8 @@ def enroll(
     *,
     role: str | None = None,
     device_name: str | None = None,
+    person_name: str | None = None,
+    designation: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> dict[str, str]:
     """Register this machine and return {'ENDPOINT_ID': ..., 'DEVICE_TOKEN': ...}."""
@@ -265,6 +269,12 @@ def enroll(
         body["role"] = role
     if device_name:
         body["name"] = device_name
+    if person_name:
+        body["person_name"] = person_name.strip()[:120]
+    if designation:
+        body["designation"] = designation.strip()[:120]
+        if not role:
+            body["role"] = designation.strip()[:120]
 
     url = f"{base}{ENROLL_PATH}"
     logging.info("Enrolling %s with Vizhi at %s", body["hostname"], url)

@@ -63,13 +63,17 @@ class DeviceSession:
                 code[:8],
             )
             device_name = str(self._config.get("DEVICE_NAME") or "").strip() or None
+            person_name = str(self._config.get("PERSON_NAME") or "").strip() or None
+            designation = str(self._config.get("DESIGNATION") or "").strip() or None
             try:
                 result = enroll(
                     self.api_base,
                     code,
                     self.agent_version,
-                    role=str(self._config.get("ROLE") or "").strip() or None,
+                    role=str(self._config.get("ROLE") or designation or "").strip() or None,
                     device_name=device_name,
+                    person_name=person_name,
+                    designation=designation,
                 )
             except EnrollmentError as exc:
                 log.error("Automatic re-enrollment failed: %s", exc)
@@ -92,6 +96,10 @@ class DeviceSession:
                     cfg["JOB_SIGNING_KEY"] = job_key
                 if device_name:
                     cfg["DEVICE_NAME"] = device_name
+                if person_name:
+                    cfg["PERSON_NAME"] = person_name
+                if designation:
+                    cfg["DESIGNATION"] = designation
                 if self._config.get("MACHINE_GUID"):
                     cfg["MACHINE_GUID"] = self._config["MACHINE_GUID"]
                 if self._config.get("AGENT_AUTO_UPDATE"):

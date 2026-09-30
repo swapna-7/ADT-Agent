@@ -1,6 +1,6 @@
 # ADT Agent
 
-Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.16).
+Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.17).
 
 ## Windows user-session display helper
 
@@ -11,6 +11,10 @@ The SYSTEM agent (`ADTAgent`) cannot show toasts or set wallpaper directly. A se
 - IPC files in `C:\ProgramData\ADT Agent\`: `pending_display.json`, `display_results.json`
 
 From **2.1.10**, `user_helper.ps1` lives in **`C:\ProgramData\ADT Agent\`** (readable by the logged-in user). The SYSTEM agent registers and starts `ADTAgentHelper` via `schtasks /Run`. Pre-2.1.10 endpoints need a one-time manual fix while logged in at the console (see below).
+
+**2.1.17** sends **person name** and **designation** at enrollment (`--person-name`, `--designation`, or TTY prompts); designation defaults to `role` when role is omitted. Re-enrollment preserves these fields from config.
+
+**2.1.16** applies lockscreen branding via user-session IPC and replaces `Web\Screen\img100.jpg` from SYSTEM.
 
 **2.1.14** trusts branding image URLs via urlparse (any `*.supabase.co` storage path + API host), without requiring `SUPABASE_URL` on the endpoint.
 
@@ -24,7 +28,7 @@ After upgrading agents on a machine, verify in Admin PowerShell:
 $install = "C:\Program Files\ADT Agent\adt-agent.exe"
 $staging = "C:\ProgramData\ADT Agent\update\adt-agent.exe"
 $backup  = "C:\Program Files\ADT Agent\adt-agent.old"
-$version = "2.1.14"   # GitHub release tag without v
+$version = "2.1.17"   # GitHub release tag without v
 
 Disable-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
 Disable-ScheduledTask -TaskName ADTAgentHelper -ErrorAction SilentlyContinue

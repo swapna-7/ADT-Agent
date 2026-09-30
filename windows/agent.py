@@ -979,6 +979,16 @@ def main() -> None:
         help="Device display name in Vizhi (defaults to hostname if omitted).",
     )
     parser.add_argument(
+        "--person-name",
+        default="",
+        help="Person using this device (shown in Vizhi as Name).",
+    )
+    parser.add_argument(
+        "--designation",
+        default="",
+        help="Job title / designation (shown in Vizhi).",
+    )
+    parser.add_argument(
         "--api",
         default="",
         help="Vizhi portal URL for enrollment (defaults to the URL baked into this build).",
@@ -1039,6 +1049,8 @@ def main() -> None:
                 AGENT_VERSION,
                 code=args.code or None,
                 name=args.name or None,
+                person_name=args.person_name or None,
+                designation=args.designation or None,
                 local_config=local_config,
             )
         except SystemExit:
@@ -1056,6 +1068,8 @@ def main() -> None:
             AGENT_VERSION,
             code=args.code or None,
             name=args.name or None,
+            person_name=args.person_name or None,
+            designation=args.designation or None,
             local_config=local_config,
         )
         local_config = {str(k): str(v) for k, v in enrolled.items()}
