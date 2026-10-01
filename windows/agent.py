@@ -26,6 +26,7 @@ from command_poller import start_command_poller
 from config_io import load_config, load_local_config, write_config
 from device_session import DeviceSession
 from enrollment import platform_tag, system_hostname, system_username
+from hidden_ps import run_hidden_powershell
 from first_run import needs_enrollment, prompt_and_enroll
 from inventory_windows import collect_windows_inventory
 from patch_runner import start_patch_poller
@@ -39,6 +40,7 @@ from report import (
 )
 from scheduler import load_last_runs, mark_run, resolve_intervals, should_run
 from self_update import (
+    _agent_dbg,
     cleanup_previous_backup,
     maybe_apply_update,
     next_check_deadline,
@@ -191,20 +193,7 @@ $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
 """
-    proc = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    proc = run_hidden_powershell(script, timeout=60)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "Failed to register scheduled task").strip()
         raise RuntimeError(detail)
@@ -301,12 +290,7 @@ if ($apps.Count -gt 0) {
     "[]"
 }
 """
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_script],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
+        result = run_hidden_powershell(ps_script, timeout=15)
         if result.returncode != 0:
             if logger:
                 logger.debug(f"PowerShell query failed: {result.stderr}")
@@ -829,13 +813,7 @@ def collect_metrics(software: list[SoftwareRow]) -> dict[str, object]:
 
 def execute_powershell_command(command: str, timeout_seconds: int) -> str:
     try:
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", command],
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
+        proc = run_hidden_powershell(command, timeout=timeout_seconds)
         stdout = (proc.stdout or "").strip()
         stderr = (proc.stderr or "").strip()
         result = f"exit_code={proc.returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}"
@@ -1156,17 +1134,35 @@ def main() -> None:
                 session.reload()
 
                 if now_ts >= next_self_update:
-                    next_self_update = next_check_deadline(intervals["auto_update"])
-                    if read_auto_update_flag(local_config, env) and should_self_update(
-                        frozen=is_frozen(), install_exe=INSTALL_EXE_PATH
-                    ):
+                    flag_on = read_auto_update_flag(local_config, env)
+                    frozen = is_frozen()
+                    allowed = should_self_update(
+                        frozen=frozen, install_exe=INSTALL_EXE_PATH
+                    )
+                    # #region agent log
+                    _agent_dbg(
+                        "A",
+                        "windows/agent.py:loop",
+                        "self-update timer fired",
+                        {
+                            "flagOn": flag_on,
+                            "frozen": frozen,
+                            "allowed": allowed,
+                            "interval": intervals["auto_update"],
+                            "version": AGENT_VERSION,
+                        },
+                    )
+                    # #endregion
+                    outcome = None
+                    if flag_on and allowed:
                         try:
-                            if maybe_apply_update(
+                            outcome = maybe_apply_update(
                                 api_base=api_base,
                                 device_token=session.device_token,
                                 data_dir=data_dir,
                                 install_exe=INSTALL_EXE_PATH,
-                            ):
+                            )
+                            if outcome == "installed":
                                 logging.info(
                                     "Agent binary replaced; exiting so the scheduled task restarts"
                                 )
@@ -1175,6 +1171,11 @@ def main() -> None:
                             raise
                         except Exception:
                             logging.exception("Self-update check failed")
+                            outcome = "failed"
+                    next_self_update = next_check_deadline(
+                        intervals["auto_update"],
+                        failed=(outcome == "failed"),
+                    )
 
                 if should_run("inventory", last_runs, intervals["inventory"], now_ts):
                     try:

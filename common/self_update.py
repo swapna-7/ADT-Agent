@@ -16,7 +16,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urljoin
 
 import requests
@@ -26,16 +26,58 @@ from version import AGENT_VERSION
 
 log = logging.getLogger(__name__)
 
+# #region agent log
+def _agent_dbg(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    try:
+        import json as _json
+
+        payload = {
+            "sessionId": "c15c98",
+            "runId": "pre-fix",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        line = _json.dumps(payload)
+        for path in (
+            Path(r"c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log"),
+            Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ADT Agent" / "debug-c15c98.log",
+        ):
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+            except OSError:
+                pass
+        try:
+            requests.post(
+                "http://127.0.0.1:7622/ingest/60cf9d8b-4c11-4f0a-96a8-00e45250c36a",
+                json=payload,
+                headers={"X-Debug-Session-Id": "c15c98"},
+                timeout=1,
+            )
+        except Exception:
+            pass
+    except Exception:
+        pass
+# #endregion
+
 LATEST_PATH = "/api/agent/update/latest"
 DOWNLOAD_PATH = "/api/agent/update/download"
 DEFAULT_INTERVAL_SECONDS = 21600
 JITTER_SECONDS = 15 * 60
+INITIAL_CHECK_SECONDS = 15
+FAILED_RETRY_SECONDS = 5 * 60
 DOWNLOAD_TIMEOUT = 120
 LATEST_TIMEOUT = 30
 CHUNK_SIZE = 1024 * 256
 REPLACE_ATTEMPTS = 8
 MAX_DOWNLOAD_ATTEMPTS = 3
 DOWNLOAD_RETRY_SLEEP = 30
+
+UpdateOutcome = Literal["installed", "current", "failed"]
 
 
 def is_truthy(value: str | None, default: bool = True) -> bool:
@@ -80,14 +122,22 @@ def read_auto_update_flag(local_config: dict[str, str], env: dict[str, str]) -> 
     return True
 
 
-def next_check_deadline(interval_seconds: int, *, initial: bool = False) -> float:
-    """Absolute unix time of the next check. First check is jitter-only so a fleet
-    does not wait a full interval after the one-time 2.1.0 reinstall."""
+def next_check_deadline(
+    interval_seconds: int, *, initial: bool = False, failed: bool = False
+) -> float:
+    """Absolute unix time of the next check.
+
+    First check is seconds, not a full interval. A failed probe (DNS, HTTP,
+    signature) retries in minutes instead of waiting the full 6 hours.
+    """
     interval = max(60, int(interval_seconds))
+    if failed:
+        return time.time() + FAILED_RETRY_SECONDS + random.uniform(0, 30)
+    if initial:
+        return time.time() + random.uniform(0, INITIAL_CHECK_SECONDS)
     jitter_cap = min(JITTER_SECONDS, max(1, int(interval * 0.1)))
     jitter = random.uniform(0, jitter_cap)
-    delay = jitter if initial else interval + jitter
-    return time.time() + delay
+    return time.time() + interval + jitter
 
 
 def backup_path(install_exe: Path) -> Path:
@@ -133,6 +183,9 @@ def fetch_latest(
 ) -> dict[str, Any] | None:
     base = (api_base or "").strip().rstrip("/")
     if not base or not device_token:
+        # #region agent log
+        _agent_dbg("B", "common/self_update.py:fetch_latest", "skip missing base or token", {"hasBase": bool(base), "hasToken": bool(device_token)})
+        # #endregion
         return None
     os_name = platform or platform_tag()
     try:
@@ -144,6 +197,9 @@ def fetch_latest(
         )
     except requests.RequestException as exc:
         log.warning("Agent update check failed to send: %s", exc)
+        # #region agent log
+        _agent_dbg("B", "common/self_update.py:fetch_latest", "request exception", {"errorType": type(exc).__name__, "platform": os_name})
+        # #endregion
         return None
     if resp.status_code >= 400:
         log.warning(
@@ -151,13 +207,23 @@ def fetch_latest(
             resp.status_code,
             (resp.text or "")[:300],
         )
+        # #region agent log
+        _agent_dbg("B", "common/self_update.py:fetch_latest", "http rejected", {"status": resp.status_code, "platform": os_name})
+        # #endregion
         return None
     try:
         data = resp.json()
     except ValueError:
         log.warning("Agent update check returned non-JSON")
+        # #region agent log
+        _agent_dbg("B", "common/self_update.py:fetch_latest", "non-json body", {"status": resp.status_code})
+        # #endregion
         return None
-    return data if isinstance(data, dict) else None
+    latest = data if isinstance(data, dict) else None
+    # #region agent log
+    _agent_dbg("B", "common/self_update.py:fetch_latest", "latest payload", {"status": resp.status_code, "gotLatest": bool(latest), "remote": str((latest or {}).get("version") or "")[:40], "hasSha": bool((latest or {}).get("sha256")), "hasSig": bool((latest or {}).get("signature") or (latest or {}).get("sig_b64"))})
+    # #endregion
+    return latest
 
 
 def _sha256_file(path: Path) -> str:
@@ -171,15 +237,52 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def usable_verify_key_bytes() -> bytes | None:
+    """Raw 32-byte Ed25519 public key, or None when missing/malformed.
+
+    A bad baked-in key must not brick self-update: SHA-256 of the Vizhi
+    payload is still required. 2.1.16 field agents reported signature_invalid
+    because CI injected a key that was not 32 bytes.
+    """
+    try:
+        import base64
+
+        from ed25519_verify_key import AGENT_VERIFY_PUBLIC_KEY
+
+        raw = (AGENT_VERIFY_PUBLIC_KEY or "").strip()
+        if not raw:
+            return None
+        decoded = base64.b64decode(raw)
+        if len(decoded) != 32:
+            log.warning(
+                "Agent verify key is %s bytes (need 32); using SHA-256 only",
+                len(decoded),
+            )
+            # #region agent log
+            _agent_dbg(
+                "B",
+                "common/self_update.py:usable_verify_key_bytes",
+                "invalid key length, skip sig",
+                {"nbytes": len(decoded)},
+            )
+            # #endregion
+            return None
+        return decoded
+    except Exception as exc:
+        log.warning("Agent verify key unreadable; using SHA-256 only: %s", exc)
+        return None
+
+
 def verify_binary_signature(binary_path: Path, sig_b64: str) -> bool:
     try:
         import base64
         import hashlib
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-        from ed25519_verify_key import AGENT_VERIFY_PUBLIC_KEY
-
-        pub_key = Ed25519PublicKey.from_public_bytes(base64.b64decode(AGENT_VERIFY_PUBLIC_KEY))
+        key_bytes = usable_verify_key_bytes()
+        if not key_bytes:
+            return False
+        pub_key = Ed25519PublicKey.from_public_bytes(key_bytes)
         sig = base64.b64decode(sig_b64)
         digest = hashlib.sha256(binary_path.read_bytes()).digest()
         pub_key.verify(sig, digest)
@@ -277,14 +380,8 @@ def download_and_verify(
             if attempt < MAX_DOWNLOAD_ATTEMPTS:
                 time.sleep(DOWNLOAD_RETRY_SLEEP)
             continue
-        pub = ""
-        try:
-            from ed25519_verify_key import AGENT_VERIFY_PUBLIC_KEY
-
-            pub = AGENT_VERIFY_PUBLIC_KEY or ""
-        except Exception:
-            pub = ""
-        if pub:
+        key_bytes = usable_verify_key_bytes()
+        if key_bytes:
             if not expected_sig_b64 or not verify_binary_signature(dest, expected_sig_b64):
                 try:
                     dest.unlink(missing_ok=True)
@@ -343,11 +440,14 @@ def maybe_apply_update(
     data_dir: Path,
     install_exe: Path,
     current_version: str = AGENT_VERSION,
-) -> bool:
-    """Download and install a newer binary. True when the process should exit."""
+) -> UpdateOutcome:
+    """Download and install a newer binary. 'installed' when the process should exit."""
     latest = fetch_latest(api_base, device_token)
+    # #region agent log
+    _agent_dbg("A", "common/self_update.py:maybe_apply_update", "self-update check result", {"current": current_version, "gotLatest": bool(latest), "remote": str((latest or {}).get("version") or "")[:40]})
+    # #endregion
     if not latest:
-        return False
+        return "failed"
 
     remote_version = str(latest.get("version") or "").strip()
     sha256 = str(latest.get("sha256") or "").strip()
@@ -355,15 +455,22 @@ def maybe_apply_update(
     url = str(latest.get("url") or "").strip() or f"{DOWNLOAD_PATH}?platform={platform_tag()}"
     if not remote_version or not sha256:
         log.warning("Agent update payload missing version or sha256")
-        return False
+        # #region agent log
+        _agent_dbg("C", "common/self_update.py:maybe_apply_update", "payload missing version or sha", {"remote": remote_version[:40], "hasSha": bool(sha256)})
+        # #endregion
+        return "failed"
 
-    if not is_newer(remote_version, current_version):
-        log.debug(
+    newer = is_newer(remote_version, current_version)
+    # #region agent log
+    _agent_dbg("C", "common/self_update.py:maybe_apply_update", "version compare", {"current": current_version, "remote": remote_version[:40], "newer": newer})
+    # #endregion
+    if not newer:
+        log.info(
             "Agent is up to date (%s, remote %s)",
             current_version,
             remote_version,
         )
-        return False
+        return "current"
 
     log.info(
         "Agent update available: %s -> %s",
@@ -373,18 +480,26 @@ def maybe_apply_update(
     staging_dir = Path(data_dir) / "update"
     staging = staging_dir / Path(install_exe).name
     download_url = _absolute_url(api_base, url)
-    if not download_and_verify(
+    downloaded = download_and_verify(
         download_url,
         staging,
         sha256,
         device_token=device_token,
         expected_sig_b64=signature or None,
         api_base=api_base,
-    ):
-        return False
+    )
+    # #region agent log
+    _agent_dbg("D", "common/self_update.py:maybe_apply_update", "download_and_verify", {"ok": downloaded, "hasSig": bool(signature)})
+    # #endregion
+    if not downloaded:
+        return "failed"
 
-    if not replace_installed_binary(staging, install_exe):
-        return False
+    replaced = replace_installed_binary(staging, install_exe)
+    # #region agent log
+    _agent_dbg("D", "common/self_update.py:maybe_apply_update", "replace_installed_binary", {"ok": replaced})
+    # #endregion
+    if not replaced:
+        return "failed"
 
     try:
         staging.unlink(missing_ok=True)
@@ -392,4 +507,4 @@ def maybe_apply_update(
         pass
 
     log.info("Installed agent %s at %s", remote_version, install_exe)
-    return True
+    return "installed"

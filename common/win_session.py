@@ -140,17 +140,11 @@ def get_active_interactive_user() -> str | None:
         log.warning("get_active_interactive_user WTS lookup failed: %s", exc)
 
     try:
-        proc = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "(Get-CimInstance Win32_ComputerSystem).UserName",
-            ],
-            capture_output=True,
-            text=True,
+        from hidden_ps import run_hidden_powershell
+
+        proc = run_hidden_powershell(
+            "(Get-CimInstance Win32_ComputerSystem).UserName",
             timeout=15,
-            check=False,
         )
         user = (proc.stdout or "").strip()
         if proc.returncode != 0 or not user:

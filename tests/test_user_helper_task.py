@@ -34,6 +34,7 @@ def test_ensure_helper_task_registered_registers_for_detected_user(
     uht.ensure_helper_task_registered(
         get_user=lambda: "DESKTOP\\swapna",
         get_principal=lambda: None,
+        get_args=lambda: None,
         register=register,
     )
     register.assert_called_once_with("DESKTOP\\swapna")
@@ -44,6 +45,7 @@ def test_ensure_helper_task_registered_reregisters_on_user_change() -> None:
     uht.ensure_helper_task_registered(
         get_user=lambda: "DESKTOP\\newuser",
         get_principal=lambda: "DESKTOP\\olduser",
+        get_args=lambda: "-WindowStyle Hidden -NoProfile",
         register=register,
     )
     register.assert_called_once_with("DESKTOP\\newuser")
@@ -59,6 +61,7 @@ def test_ensure_helper_task_registered_is_idempotent(
     uht.ensure_helper_task_registered(
         get_user=lambda: "DESKTOP\\swapna",
         get_principal=lambda: "DESKTOP\\swapna",
+        get_args=lambda: "-WindowStyle Hidden -NoProfile -STA",
         register=register,
     )
     register.assert_not_called()
@@ -75,10 +78,39 @@ def test_ensure_helper_task_registered_starts_when_not_running(
     uht.ensure_helper_task_registered(
         get_user=lambda: "DESKTOP\\swapna",
         get_principal=lambda: "DESKTOP\\swapna",
+        get_args=lambda: "-WindowStyle Hidden -NoProfile -STA",
         register=register,
     )
     register.assert_not_called()
     start.assert_called_once()
+
+
+def test_ensure_helper_task_registered_reregisters_visible_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    register = MagicMock(return_value=True)
+    start = MagicMock(return_value=True)
+    monkeypatch.setattr(uht, "is_helper_running", lambda: True)
+    monkeypatch.setattr(uht, "start_helper_task", start)
+    uht.ensure_helper_task_registered(
+        get_user=lambda: "DESKTOP\\swapna",
+        get_principal=lambda: "DESKTOP\\swapna",
+        get_args=lambda: "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden",
+        register=register,
+    )
+    register.assert_called_once_with("DESKTOP\\swapna")
+    start.assert_not_called()
+
+
+def test_helper_task_args_are_hidden() -> None:
+    assert uht.helper_task_args_are_hidden(
+        "-WindowStyle Hidden -NoProfile -STA -NonInteractive"
+    )
+    assert not uht.helper_task_args_are_hidden(
+        "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden"
+    )
+    assert not uht.helper_task_args_are_hidden(None)
+    assert not uht.helper_task_args_are_hidden("")
 
 
 def test_register_helper_task_failure_does_not_crash_main_loop() -> None:
@@ -87,6 +119,7 @@ def test_register_helper_task_failure_does_not_crash_main_loop() -> None:
         uht.ensure_helper_task_registered(
             get_user=lambda: "DESKTOP\\swapna",
             get_principal=lambda: None,
+            get_args=lambda: None,
             register=register,
         )
     except Exception as exc:
@@ -134,8 +167,9 @@ def test_register_helper_task_uses_schtasks_and_user_logon_trigger(
     helper.write_text("# helper", encoding="utf-8")
     captured: dict[str, str] = {}
 
-    def fake_run(cmd, **kwargs):
-        captured["script"] = cmd[-1]
+    def fake_hidden(script, timeout=60, **kwargs):
+        captured["script"] = script
+
         class Proc:
             returncode = 0
             stdout = ""
@@ -143,7 +177,7 @@ def test_register_helper_task_uses_schtasks_and_user_logon_trigger(
 
         return Proc()
 
-    monkeypatch.setattr(uht.subprocess, "run", fake_run)
+    monkeypatch.setattr(uht, "run_hidden_powershell", fake_hidden)
     monkeypatch.setattr(uht, "start_helper_task", lambda **k: True)
 
     assert uht.register_helper_task("DESKTOP\\swapna", helper_path=helper)
@@ -151,6 +185,8 @@ def test_register_helper_task_uses_schtasks_and_user_logon_trigger(
     assert "-AtLogOn -User 'DESKTOP\\swapna'" in script
     assert "schtasks /Run /TN 'ADTAgentHelper'" in script
     assert "MultipleInstances IgnoreNew" in script
+    assert "-WindowStyle Hidden" in script
+    assert "New-TimeSpan -Minutes 5" in script
     assert "-Command" in script
     assert "-File" not in script
     assert "Start-ScheduledTask" not in script
@@ -165,6 +201,7 @@ def test_user_helper_ps1_winrt_loads_are_single_line() -> None:
 
 def test_build_helper_task_arguments_quotes_spaces() -> None:
     args = uht.build_helper_task_arguments(r"C:\ProgramData\ADT Agent\user_helper.ps1")
+    assert args.startswith("-WindowStyle Hidden")
     assert "-Command" in args
     assert "-STA" in args
     assert "ADT Agent" in args

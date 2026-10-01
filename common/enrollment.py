@@ -26,6 +26,8 @@ from typing import Any
 
 import requests
 
+from hidden_ps import run_hidden_powershell
+
 ENROLL_PATH = "/api/agent/enroll"
 DEFAULT_TIMEOUT = 30
 
@@ -100,18 +102,9 @@ def _windows_username() -> str | None:
 
 def _windows_wmi_username() -> str | None:
     """Same value msinfo32 reports as User Name (currently logged-on user)."""
-    proc = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "(Get-CimInstance -ClassName Win32_ComputerSystem).UserName",
-        ],
-        capture_output=True,
-        text=True,
+    proc = run_hidden_powershell(
+        "(Get-CimInstance -ClassName Win32_ComputerSystem).UserName",
         timeout=8,
-        check=False,
     )
     return (proc.stdout or "").strip() or None
 
@@ -352,21 +345,7 @@ def dumps(payload: dict[str, Any]) -> str:
 def run_powershell_json(script: str, timeout: int) -> Any:
     """Run a PowerShell snippet expected to emit JSON. Returns None on any failure."""
     try:
-        proc = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                script,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        proc = run_hidden_powershell(script, timeout=timeout)
     except (subprocess.TimeoutExpired, OSError):
         return None
 

@@ -56,12 +56,9 @@ def verify_download(
             "Write-Output ($sig.SignerCertificate.Subject -join '|')"
         )
         try:
-            proc = subprocess.run(
-                ["powershell", "-NonInteractive", "-Command", script],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+            from hidden_ps import run_hidden_powershell
+
+            proc = run_hidden_powershell(script, timeout=60)
         except subprocess.TimeoutExpired:
             return False, "signature_timeout", "Authenticode check timed out"
         lines = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]

@@ -59,7 +59,7 @@ def test_install_aborts_on_signature_mismatch() -> None:
         path = tmp.name
 
     fake_proc = type("P", (), {"stdout": "NotSigned\nWrong Publisher", "returncode": 0})()
-    with patch("install_verify.subprocess.run", return_value=fake_proc):
+    with patch("hidden_ps.run_hidden_powershell", return_value=fake_proc):
         ok, code, _msg = verify_download(path, entry)
     Path(path).unlink(missing_ok=True)
     assert ok is False

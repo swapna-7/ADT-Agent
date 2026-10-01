@@ -972,17 +972,18 @@ def main() -> None:
                 last_runs = load_last_runs(local_config)
 
                 if now_ts >= next_self_update and device_token:
-                    next_self_update = next_check_deadline(intervals["auto_update"])
+                    outcome = None
                     if read_auto_update_flag(local_config, env) and should_self_update(
                         frozen=is_frozen(), install_exe=INSTALL_BIN
                     ):
                         try:
-                            if maybe_apply_update(
+                            outcome = maybe_apply_update(
                                 api_base=api_base,
                                 device_token=device_token,
                                 data_dir=data_dir,
                                 install_exe=INSTALL_BIN,
-                            ):
+                            )
+                            if outcome == "installed":
                                 logging.info(
                                     "Agent binary replaced; exiting so launchd restarts"
                                 )
@@ -991,6 +992,11 @@ def main() -> None:
                             raise
                         except Exception:
                             logging.exception("Self-update check failed")
+                            outcome = "failed"
+                    next_self_update = next_check_deadline(
+                        intervals["auto_update"],
+                        failed=(outcome == "failed"),
+                    )
 
                 if should_run("inventory", last_runs, intervals["inventory"], now_ts):
                     try:

@@ -22,6 +22,7 @@ from typing import Any
 _COMMON = Path(__file__).resolve().parent.parent / "common"
 if str(_COMMON) not in sys.path:
     sys.path.insert(0, str(_COMMON))
+from hidden_ps import run_hidden_powershell
 from normalize import identity_key, normalize_row, parse_version
 
 SoftwareRow = dict[str, Any]
@@ -287,22 +288,11 @@ def _run_inventory_script(timeout: int) -> dict[str, Any] | None:
     os.close(handle)
     env = {**os.environ, "VIZHI_INVENTORY_OUT": out_path}
     try:
-        proc = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                _INVENTORY_PS,
-            ],
-            capture_output=True,
-            text=True,
+        proc = run_hidden_powershell(
+            _INVENTORY_PS,
+            timeout=timeout,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
-            check=False,
             env=env,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:

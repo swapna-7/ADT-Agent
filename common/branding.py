@@ -318,20 +318,9 @@ def _get_uid(username: str) -> str:
 
 
 def _ps_run(script: str, timeout: int = 30) -> None:
-    result = subprocess.run(
-        [
-            "powershell",
-            "-NonInteractive",
-            "-NoProfile",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            script,
-        ],
-        timeout=timeout,
-        capture_output=True,
-        text=True,
-    )
+    from hidden_ps import run_hidden_powershell
+
+    result = run_hidden_powershell(script, timeout=timeout)
     if result.returncode != 0:
         err = (result.stderr or result.stdout or "powershell failed").strip()
         raise RuntimeError(err[:400])
@@ -416,18 +405,9 @@ Copy-Item -LiteralPath $src -Destination $dest -Force
 (Get-Item -LiteralPath $dest).Length
 """
     try:
-        result = subprocess.run(
-            [
-                "powershell",
-                "-NonInteractive",
-                "-NoProfile",
-                "-Command",
-                ps,
-            ],
-            timeout=30,
-            capture_output=True,
-            text=True,
-        )
+        from hidden_ps import run_hidden_powershell
+
+        result = run_hidden_powershell(ps, timeout=30)
         info["rc"] = result.returncode
         info["stdout"] = (result.stdout or "").strip()[:80]
         info["stderr"] = (result.stderr or "").strip()[:160]

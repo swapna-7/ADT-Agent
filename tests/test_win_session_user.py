@@ -50,5 +50,5 @@ def test_get_active_interactive_user_falls_back_to_cim(
         stdout = "DESKTOP-ABC\\swapna\n"
         stderr = ""
 
-    monkeypatch.setattr("win_session.subprocess.run", lambda *a, **k: Proc())
+    monkeypatch.setattr("hidden_ps.run_hidden_powershell", lambda *a, **k: Proc())
     assert get_active_interactive_user() == "DESKTOP-ABC\\swapna"

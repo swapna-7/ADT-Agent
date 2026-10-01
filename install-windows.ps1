@@ -50,7 +50,7 @@ if (Test-Path $helperSrc) {
 if (Test-Path $helperDest) {
     # Space-safe -Command (matches user_helper_task.build_helper_task_arguments)
     $quotedHelper = $helperDest.Replace("'", "''")
-    $helperArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"& '$quotedHelper'`""
+    $helperArgs = "-WindowStyle Hidden -NoProfile -STA -NonInteractive -ExecutionPolicy Bypass -Command `"& '$quotedHelper'`""
     $helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $helperArgs
     $interactiveUser = (Get-CimInstance -ClassName Win32_ComputerSystem).UserName
     if (-not $interactiveUser) {
@@ -60,7 +60,7 @@ if (Test-Path $helperDest) {
     $helperSettings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit ([TimeSpan]::Zero) `
         -RestartCount 999 `
-        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -RestartInterval (New-TimeSpan -Minutes 5) `
         -StartWhenAvailable `
         -AllowStartIfOnBatteries `
         -MultipleInstances IgnoreNew

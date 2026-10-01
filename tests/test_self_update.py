@@ -9,15 +9,18 @@ from pathlib import Path
 import pytest
 
 from self_update import (  # noqa: E402
+    FAILED_RETRY_SECONDS,
     auto_update_enabled,
     backup_path,
     cleanup_previous_backup,
     download_and_verify,
     is_newer,
+    next_check_deadline,
     parse_semver,
     read_auto_update_flag,
     replace_installed_binary,
     should_self_update,
+    usable_verify_key_bytes,
 )
 from version import AGENT_VERSION  # noqa: E402
 
@@ -158,7 +161,11 @@ def test_download_and_verify_reports_signature_failure_with_api_base(
         "self_update.report_update_failed",
         lambda api_base, device_token, reason: posted.append((api_base, device_token, reason)),
     )
-    monkeypatch.setattr("ed25519_verify_key.AGENT_VERIFY_PUBLIC_KEY", "dGVzdA==")
+    monkeypatch.setattr(
+        "ed25519_verify_key.AGENT_VERIFY_PUBLIC_KEY",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    )
+    monkeypatch.setattr("self_update.usable_verify_key_bytes", lambda: b"\x00" * 32)
     monkeypatch.setattr("self_update.verify_binary_signature", lambda *_args, **_kwargs: False)
 
     dest = tmp_path / "staging" / "adt-agent.exe"
@@ -183,3 +190,49 @@ def test_sha256_of_replaced_file(tmp_path: Path) -> None:
     assert replace_installed_binary(staging, dest)
     digest = hashlib.sha256(dest.read_bytes()).hexdigest()
     assert digest == hashlib.sha256(payload).hexdigest()
+
+
+def test_malformed_verify_key_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ed25519_verify_key.AGENT_VERIFY_PUBLIC_KEY", "dGVzdA==")
+    assert usable_verify_key_bytes() is None
+
+
+def test_download_succeeds_when_baked_key_is_malformed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"vizhi-agent-update-payload"
+    expected = hashlib.sha256(payload).hexdigest()
+
+    class FakeResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int = 0):
+            yield payload
+
+    monkeypatch.setattr("self_update.requests.get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr("ed25519_verify_key.AGENT_VERIFY_PUBLIC_KEY", "dGVzdA==")
+
+    dest = tmp_path / "staging" / "adt-agent.exe"
+    assert download_and_verify(
+        "https://vizhi.rcsaware.com/api/agent/update/download?platform=windows",
+        dest,
+        expected,
+        device_token="test-token",
+        expected_sig_b64="AAAA",
+        api_base="https://vizhi.rcsaware.com",
+    )
+    assert dest.read_bytes() == payload
+
+
+def test_failed_check_retries_in_minutes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("self_update.time.time", lambda: 1_000_000.0)
+    failed = next_check_deadline(21600, failed=True)
+    normal = next_check_deadline(21600)
+    assert 1_000_000.0 + FAILED_RETRY_SECONDS <= failed <= 1_000_000.0 + FAILED_RETRY_SECONDS + 30
+    assert normal >= 1_000_000.0 + 21600

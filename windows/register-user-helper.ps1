@@ -23,7 +23,7 @@ if (-not (Test-Path $HelperPath)) {
 }
 
 # -File breaks when the path contains spaces (Task Scheduler splits on spaces). Use -Command.
-$psArg = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""& '$($HelperPath -replace '''','''''')'"""
+$psArg = "-WindowStyle Hidden -NoProfile -STA -NonInteractive -ExecutionPolicy Bypass -Command ""& '$($HelperPath -replace '''','''''')'"""
 $helperAction = New-ScheduledTaskAction `
     -Execute 'powershell.exe' `
     -Argument $psArg
@@ -39,7 +39,7 @@ $helperTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 $helperSettings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -RestartCount 999 `
-    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -RestartInterval (New-TimeSpan -Minutes 5) `
     -AllowStartIfOnBatteries `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew

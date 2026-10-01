@@ -80,6 +80,7 @@ $pyiArgs = @(
     '--hidden-import', 'scheduler',
     '--hidden-import', 'command_poller',
     '--hidden-import', 'enrollment',
+    '--hidden-import', 'hidden_ps',
     '--hidden-import', 'normalize',
     '--hidden-import', 'patch_runner',
     '--hidden-import', 'report',

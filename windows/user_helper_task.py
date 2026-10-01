@@ -20,6 +20,7 @@ if str(_COMMON) not in sys.path:
     sys.path.insert(0, str(_COMMON))
 
 from enrollment import device_headers  # noqa: E402
+from hidden_ps import run_hidden_powershell  # noqa: E402
 from version import AGENT_VERSION  # noqa: E402
 from win_session import get_active_interactive_user  # noqa: E402
 
@@ -48,7 +49,7 @@ def build_helper_task_arguments(helper_path: Path | str) -> str:
     """Build Task Scheduler args that survive spaces in ProgramData\\ADT Agent\\."""
     quoted = str(helper_path).replace("'", "''")
     return (
-        "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden "
+        "-WindowStyle Hidden -NoProfile -STA -NonInteractive -ExecutionPolicy Bypass "
         f"-Command \"& '{quoted}'\""
     )
 
@@ -310,13 +311,7 @@ def start_helper_task(*, task_name: str = HELPER_TASK_NAME) -> bool:
 def get_registered_task_principal(task_name: str = HELPER_TASK_NAME) -> str | None:
     script = f"(Get-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue).Principal.UserId"
     try:
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        proc = run_hidden_powershell(script, timeout=30)
         principal = (proc.stdout or "").strip()
         if proc.returncode != 0 or not principal:
             return None
@@ -324,6 +319,30 @@ def get_registered_task_principal(task_name: str = HELPER_TASK_NAME) -> str | No
     except Exception as exc:
         log.warning("Could not read scheduled task principal for %s: %s", task_name, exc)
         return None
+
+
+def get_registered_task_arguments(task_name: str = HELPER_TASK_NAME) -> str | None:
+    script = (
+        f"(Get-ScheduledTask -TaskName '{task_name}' -ErrorAction SilentlyContinue)"
+        ".Actions | ForEach-Object { $_.Arguments }"
+    )
+    try:
+        proc = run_hidden_powershell(script, timeout=30)
+        args = (proc.stdout or "").strip()
+        if proc.returncode != 0 or not args:
+            return None
+        return args
+    except Exception as exc:
+        log.warning("Could not read scheduled task arguments for %s: %s", task_name, exc)
+        return None
+
+
+def helper_task_args_are_hidden(arguments: str | None) -> bool:
+    """True when Task Scheduler starts powershell with hide flags first."""
+    if not arguments:
+        return False
+    normalized = " ".join(arguments.split())
+    return normalized.lower().startswith("-windowstyle hidden")
 
 
 def register_helper_task(user: str, *, helper_path: Path | None = None) -> bool:
@@ -338,26 +357,13 @@ def register_helper_task(user: str, *, helper_path: Path | None = None) -> bool:
 $ErrorActionPreference = 'Stop'
 $helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '{ps_arg}'
 $helperTrigger = New-ScheduledTaskTrigger -AtLogOn -User '{safe_user}'
-$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
+$helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 5) -AllowStartIfOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId '{safe_user}' -LogonType Interactive
 Register-ScheduledTask -TaskName '{HELPER_TASK_NAME}' -Action $helperAction -Trigger $helperTrigger -Settings $helperSettings -Principal $principal -Force | Out-Null
 schtasks /Run /TN '{HELPER_TASK_NAME}' | Out-Null
 """
     try:
-        proc = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                script,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
+        proc = run_hidden_powershell(script, timeout=60)
     except Exception as exc:
         _debug_log(
             "B",
@@ -396,11 +402,13 @@ def ensure_helper_task_registered(
     device_token: str | None = None,
     get_user: Callable[[], str | None] | None = None,
     get_principal: Callable[[], str | None] | None = None,
+    get_args: Callable[[], str | None] | None = None,
     register: Callable[[str], bool] | None = None,
 ) -> None:
     """Re-register ADTAgentHelper when an interactive user is present (metrics cadence)."""
     user_fn = get_user or get_active_interactive_user
     principal_fn = get_principal or get_registered_task_principal
+    args_fn = get_args or get_registered_task_arguments
     register_fn = register or (lambda u: register_helper_task(u))
 
     active_user = user_fn()
@@ -415,14 +423,35 @@ def ensure_helper_task_registered(
         return
 
     current_principal = principal_fn()
+    current_args = args_fn()
+    hidden_ok = helper_task_args_are_hidden(current_args)
     _debug_log(
         "D",
         "user_helper_task.py:ensure_helper_task_registered",
         "principal check",
-        {"active_user": active_user, "current_principal": current_principal},
+        {
+            "active_user": active_user,
+            "current_principal": current_principal,
+            "hidden_ok": hidden_ok,
+            "args_prefix": (current_args or "")[:40],
+        },
     )
 
     if current_principal and _principal_matches(current_principal, active_user):
+        if not hidden_ok:
+            _debug_log(
+                "A",
+                "user_helper_task.py:ensure_helper_task_registered",
+                "visible helper args — re-registering hidden",
+                {"user": active_user, "args_prefix": (current_args or "")[:80]},
+                run_id="post-fix",
+            )
+            try:
+                if register_fn(active_user):
+                    _verify_and_report(api_base, device_token)
+            except Exception as exc:
+                log.warning("ADTAgentHelper hidden re-register error (will retry): %s", exc)
+            return
         if is_helper_running():
             _debug_log(
                 "D",
