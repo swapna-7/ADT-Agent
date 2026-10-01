@@ -26,44 +26,6 @@ from version import AGENT_VERSION
 
 log = logging.getLogger(__name__)
 
-# #region agent log
-def _agent_dbg(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
-    try:
-        import json as _json
-
-        payload = {
-            "sessionId": "c15c98",
-            "runId": "pre-fix",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        line = _json.dumps(payload)
-        for path in (
-            Path(r"c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log"),
-            Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ADT Agent" / "debug-c15c98.log",
-        ):
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open("a", encoding="utf-8") as fh:
-                    fh.write(line + "\n")
-            except OSError:
-                pass
-        try:
-            requests.post(
-                "http://127.0.0.1:7622/ingest/60cf9d8b-4c11-4f0a-96a8-00e45250c36a",
-                json=payload,
-                headers={"X-Debug-Session-Id": "c15c98"},
-                timeout=1,
-            )
-        except Exception:
-            pass
-    except Exception:
-        pass
-# #endregion
-
 LATEST_PATH = "/api/agent/update/latest"
 DOWNLOAD_PATH = "/api/agent/update/download"
 DEFAULT_INTERVAL_SECONDS = 21600
@@ -183,9 +145,6 @@ def fetch_latest(
 ) -> dict[str, Any] | None:
     base = (api_base or "").strip().rstrip("/")
     if not base or not device_token:
-        # #region agent log
-        _agent_dbg("B", "common/self_update.py:fetch_latest", "skip missing base or token", {"hasBase": bool(base), "hasToken": bool(device_token)})
-        # #endregion
         return None
     os_name = platform or platform_tag()
     try:
@@ -197,9 +156,6 @@ def fetch_latest(
         )
     except requests.RequestException as exc:
         log.warning("Agent update check failed to send: %s", exc)
-        # #region agent log
-        _agent_dbg("B", "common/self_update.py:fetch_latest", "request exception", {"errorType": type(exc).__name__, "platform": os_name})
-        # #endregion
         return None
     if resp.status_code >= 400:
         log.warning(
@@ -207,22 +163,13 @@ def fetch_latest(
             resp.status_code,
             (resp.text or "")[:300],
         )
-        # #region agent log
-        _agent_dbg("B", "common/self_update.py:fetch_latest", "http rejected", {"status": resp.status_code, "platform": os_name})
-        # #endregion
         return None
     try:
         data = resp.json()
     except ValueError:
         log.warning("Agent update check returned non-JSON")
-        # #region agent log
-        _agent_dbg("B", "common/self_update.py:fetch_latest", "non-json body", {"status": resp.status_code})
-        # #endregion
         return None
     latest = data if isinstance(data, dict) else None
-    # #region agent log
-    _agent_dbg("B", "common/self_update.py:fetch_latest", "latest payload", {"status": resp.status_code, "gotLatest": bool(latest), "remote": str((latest or {}).get("version") or "")[:40], "hasSha": bool((latest or {}).get("sha256")), "hasSig": bool((latest or {}).get("signature") or (latest or {}).get("sig_b64"))})
-    # #endregion
     return latest
 
 
@@ -258,14 +205,6 @@ def usable_verify_key_bytes() -> bytes | None:
                 "Agent verify key is %s bytes (need 32); using SHA-256 only",
                 len(decoded),
             )
-            # #region agent log
-            _agent_dbg(
-                "B",
-                "common/self_update.py:usable_verify_key_bytes",
-                "invalid key length, skip sig",
-                {"nbytes": len(decoded)},
-            )
-            # #endregion
             return None
         return decoded
     except Exception as exc:
@@ -443,9 +382,6 @@ def maybe_apply_update(
 ) -> UpdateOutcome:
     """Download and install a newer binary. 'installed' when the process should exit."""
     latest = fetch_latest(api_base, device_token)
-    # #region agent log
-    _agent_dbg("A", "common/self_update.py:maybe_apply_update", "self-update check result", {"current": current_version, "gotLatest": bool(latest), "remote": str((latest or {}).get("version") or "")[:40]})
-    # #endregion
     if not latest:
         return "failed"
 
@@ -455,15 +391,9 @@ def maybe_apply_update(
     url = str(latest.get("url") or "").strip() or f"{DOWNLOAD_PATH}?platform={platform_tag()}"
     if not remote_version or not sha256:
         log.warning("Agent update payload missing version or sha256")
-        # #region agent log
-        _agent_dbg("C", "common/self_update.py:maybe_apply_update", "payload missing version or sha", {"remote": remote_version[:40], "hasSha": bool(sha256)})
-        # #endregion
         return "failed"
 
     newer = is_newer(remote_version, current_version)
-    # #region agent log
-    _agent_dbg("C", "common/self_update.py:maybe_apply_update", "version compare", {"current": current_version, "remote": remote_version[:40], "newer": newer})
-    # #endregion
     if not newer:
         log.info(
             "Agent is up to date (%s, remote %s)",
@@ -488,16 +418,10 @@ def maybe_apply_update(
         expected_sig_b64=signature or None,
         api_base=api_base,
     )
-    # #region agent log
-    _agent_dbg("D", "common/self_update.py:maybe_apply_update", "download_and_verify", {"ok": downloaded, "hasSig": bool(signature)})
-    # #endregion
     if not downloaded:
         return "failed"
 
     replaced = replace_installed_binary(staging, install_exe)
-    # #region agent log
-    _agent_dbg("D", "common/self_update.py:maybe_apply_update", "replace_installed_binary", {"ok": replaced})
-    # #endregion
     if not replaced:
         return "failed"
 

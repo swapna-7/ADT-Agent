@@ -40,7 +40,6 @@ from report import (
 )
 from scheduler import load_last_runs, mark_run, resolve_intervals, should_run
 from self_update import (
-    _agent_dbg,
     cleanup_previous_backup,
     maybe_apply_update,
     next_check_deadline,
@@ -1139,20 +1138,6 @@ def main() -> None:
                     allowed = should_self_update(
                         frozen=frozen, install_exe=INSTALL_EXE_PATH
                     )
-                    # #region agent log
-                    _agent_dbg(
-                        "A",
-                        "windows/agent.py:loop",
-                        "self-update timer fired",
-                        {
-                            "flagOn": flag_on,
-                            "frozen": frozen,
-                            "allowed": allowed,
-                            "interval": intervals["auto_update"],
-                            "version": AGENT_VERSION,
-                        },
-                    )
-                    # #endregion
                     outcome = None
                     if flag_on and allowed:
                         try:
