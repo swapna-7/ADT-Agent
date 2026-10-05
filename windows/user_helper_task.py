@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Callable
 
 import requests
@@ -70,8 +70,12 @@ def write_helper_launcher(helper_path: Path | str) -> Path:
 
 
 def build_helper_task_arguments(helper_path: Path | str) -> str:
-    """Task Scheduler args for wscript.exe — GUI host, no console flash."""
-    launcher = Path(helper_path).with_name(HELPER_LAUNCHER_NAME)
+    """Task Scheduler args for wscript.exe — GUI host, no console flash.
+
+    Always Windows-path semantics: Linux CI pathlib would otherwise treat
+    ``C:\\ProgramData\\ADT Agent\\user_helper.ps1`` as a single filename.
+    """
+    launcher = PureWindowsPath(str(helper_path)).with_name(HELPER_LAUNCHER_NAME)
     return f'//B //Nologo "{launcher}"'
 
 

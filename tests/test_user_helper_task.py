@@ -208,6 +208,7 @@ def test_build_helper_task_arguments_quotes_spaces() -> None:
     assert args.startswith("//B //Nologo")
     assert "user_helper_launch.vbs" in args
     assert "ADT Agent" in args
+    assert r'"C:\ProgramData\ADT Agent\user_helper_launch.vbs"' in args
     assert "-File" not in args
     vbs = uht.build_helper_launcher_vbs(r"C:\ProgramData\ADT Agent\user_helper.ps1")
     assert "Wscript.Shell" in vbs
