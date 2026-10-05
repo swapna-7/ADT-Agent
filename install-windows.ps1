@@ -48,10 +48,18 @@ if (Test-Path $helperSrc) {
 }
 
 if (Test-Path $helperDest) {
-    # Space-safe -Command (matches user_helper_task.build_helper_task_arguments)
+    # wscript host — Task Scheduler starting powershell.exe directly flashes a console.
     $quotedHelper = $helperDest.Replace("'", "''")
-    $helperArgs = "-WindowStyle Hidden -NoProfile -STA -NonInteractive -ExecutionPolicy Bypass -Command `"& '$quotedHelper'`""
-    $helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $helperArgs
+    $launcherDest = Join-Path $dataDir 'user_helper_launch.vbs'
+    @(
+        'Option Explicit'
+        'Dim sh, cmd'
+        "cmd = `"powershell.exe -WindowStyle Hidden -NoProfile -STA -NonInteractive -ExecutionPolicy Bypass -Command `"`"& '$quotedHelper'`"`"`""
+        'Set sh = CreateObject("Wscript.Shell")'
+        'sh.Run cmd, 0, True'
+    ) | Set-Content -LiteralPath $launcherDest -Encoding ASCII
+    $helperArgs = "//B //Nologo `"$launcherDest`""
+    $helperAction = New-ScheduledTaskAction -Execute 'C:\Windows\System32\wscript.exe' -Argument $helperArgs
     $interactiveUser = (Get-CimInstance -ClassName Win32_ComputerSystem).UserName
     if (-not $interactiveUser) {
         $interactiveUser = "$env:USERDOMAIN\$env:USERNAME"

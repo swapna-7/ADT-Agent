@@ -45,7 +45,7 @@ def test_ensure_helper_task_registered_reregisters_on_user_change() -> None:
     uht.ensure_helper_task_registered(
         get_user=lambda: "DESKTOP\\newuser",
         get_principal=lambda: "DESKTOP\\olduser",
-        get_args=lambda: "-WindowStyle Hidden -NoProfile",
+        get_args=lambda: '//B //Nologo "C:\\ProgramData\\ADT Agent\\user_helper_launch.vbs"',
         register=register,
     )
     register.assert_called_once_with("DESKTOP\\newuser")
@@ -61,7 +61,7 @@ def test_ensure_helper_task_registered_is_idempotent(
     uht.ensure_helper_task_registered(
         get_user=lambda: "DESKTOP\\swapna",
         get_principal=lambda: "DESKTOP\\swapna",
-        get_args=lambda: "-WindowStyle Hidden -NoProfile -STA",
+        get_args=lambda: '//B //Nologo "C:\\ProgramData\\ADT Agent\\user_helper_launch.vbs"',
         register=register,
     )
     register.assert_not_called()
@@ -78,7 +78,7 @@ def test_ensure_helper_task_registered_starts_when_not_running(
     uht.ensure_helper_task_registered(
         get_user=lambda: "DESKTOP\\swapna",
         get_principal=lambda: "DESKTOP\\swapna",
-        get_args=lambda: "-WindowStyle Hidden -NoProfile -STA",
+        get_args=lambda: '//B //Nologo "C:\\ProgramData\\ADT Agent\\user_helper_launch.vbs"',
         register=register,
     )
     register.assert_not_called()
@@ -104,6 +104,9 @@ def test_ensure_helper_task_registered_reregisters_visible_args(
 
 def test_helper_task_args_are_hidden() -> None:
     assert uht.helper_task_args_are_hidden(
+        '//B //Nologo "C:\\ProgramData\\ADT Agent\\user_helper_launch.vbs"'
+    )
+    assert not uht.helper_task_args_are_hidden(
         "-WindowStyle Hidden -NoProfile -STA -NonInteractive"
     )
     assert not uht.helper_task_args_are_hidden(
@@ -185,11 +188,12 @@ def test_register_helper_task_uses_schtasks_and_user_logon_trigger(
     assert "-AtLogOn -User 'DESKTOP\\swapna'" in script
     assert "schtasks /Run /TN 'ADTAgentHelper'" in script
     assert "MultipleInstances IgnoreNew" in script
-    assert "-WindowStyle Hidden" in script
+    assert "wscript.exe" in script
+    assert "user_helper_launch.vbs" in script
+    assert "//B //Nologo" in script
     assert "New-TimeSpan -Minutes 5" in script
-    assert "-Command" in script
-    assert "-File" not in script
     assert "Start-ScheduledTask" not in script
+    assert "-Execute 'powershell.exe'" not in script
 
 
 def test_user_helper_ps1_winrt_loads_are_single_line() -> None:
@@ -201,11 +205,14 @@ def test_user_helper_ps1_winrt_loads_are_single_line() -> None:
 
 def test_build_helper_task_arguments_quotes_spaces() -> None:
     args = uht.build_helper_task_arguments(r"C:\ProgramData\ADT Agent\user_helper.ps1")
-    assert args.startswith("-WindowStyle Hidden")
-    assert "-Command" in args
-    assert "-STA" in args
+    assert args.startswith("//B //Nologo")
+    assert "user_helper_launch.vbs" in args
     assert "ADT Agent" in args
     assert "-File" not in args
+    vbs = uht.build_helper_launcher_vbs(r"C:\ProgramData\ADT Agent\user_helper.ps1")
+    assert "Wscript.Shell" in vbs
+    assert "sh.Run cmd, 0, True" in vbs
+    assert "user_helper.ps1" in vbs
 
 
 def test_verify_helper_started_detects_missing_log(
@@ -256,11 +263,12 @@ def test_ci_smoke_staging_path_includes_space() -> None:
 
 
 def test_debug_log_writes_ndjson(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    log_path = tmp_path / "debug-5a7da5.log"
+    log_path = tmp_path / "debug-c15c98.log"
     monkeypatch.setattr(uht, "DEBUG_LOG_PATH", log_path)
+    monkeypatch.setattr(uht, "WORKSPACE_DEBUG_LOG", tmp_path / "missing" / "debug-c15c98.log")
     uht._debug_log("A", "test", "hello", {"k": 1}, run_id="test-run")
     lines = log_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1
     payload = json.loads(lines[0])
     assert payload["hypothesisId"] == "A"
-    assert payload["sessionId"] == "5a7da5"
+    assert payload["sessionId"] == "c15c98"

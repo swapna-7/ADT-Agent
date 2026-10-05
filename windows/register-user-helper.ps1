@@ -22,10 +22,18 @@ if (-not (Test-Path $HelperPath)) {
     throw "user_helper.ps1 not found at: $HelperPath"
 }
 
-# -File breaks when the path contains spaces (Task Scheduler splits on spaces). Use -Command.
-$psArg = "-WindowStyle Hidden -NoProfile -STA -NonInteractive -ExecutionPolicy Bypass -Command ""& '$($HelperPath -replace '''','''''')'"""
+$quotedHelper = $HelperPath.Replace("'", "''")
+$launcherPath = Join-Path (Split-Path -Parent $HelperPath) 'user_helper_launch.vbs'
+@(
+    'Option Explicit'
+    'Dim sh, cmd'
+    "cmd = `"powershell.exe -WindowStyle Hidden -NoProfile -STA -NonInteractive -ExecutionPolicy Bypass -Command `"`"& '$quotedHelper'`"`"`""
+    'Set sh = CreateObject("Wscript.Shell")'
+    'sh.Run cmd, 0, True'
+) | Set-Content -LiteralPath $launcherPath -Encoding ASCII
+$psArg = "//B //Nologo `"$launcherPath`""
 $helperAction = New-ScheduledTaskAction `
-    -Execute 'powershell.exe' `
+    -Execute 'C:\Windows\System32\wscript.exe' `
     -Argument $psArg
 
 # AtLogOn tasks registered by the SYSTEM agent need an explicit interactive user.
@@ -57,4 +65,3 @@ Register-ScheduledTask `
 Write-Host "Registered ADTAgentHelper for $user"
 Write-Host 'Now open a NORMAL (non-admin) PowerShell and run:'
 Write-Host '  schtasks /Run /TN ADTAgentHelper'
-Write-Host 'Do not close any window that flashes; it should hide itself.'

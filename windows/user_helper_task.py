@@ -20,7 +20,7 @@ if str(_COMMON) not in sys.path:
     sys.path.insert(0, str(_COMMON))
 
 from enrollment import device_headers  # noqa: E402
-from hidden_ps import run_hidden_powershell  # noqa: E402
+from hidden_ps import CREATE_NO_WINDOW, run_hidden_powershell, run_hidden_process  # noqa: E402
 from version import AGENT_VERSION  # noqa: E402
 from win_session import get_active_interactive_user  # noqa: E402
 
@@ -30,13 +30,17 @@ INSTALL_DIR = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "ADT A
 DATA_DIR = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "ADT Agent"
 # User-session helper must live under ProgramData — Program Files is SYSTEM/admin-only.
 HELPER_INSTALL_PATH = DATA_DIR / "user_helper.ps1"
+HELPER_LAUNCHER_NAME = "user_helper_launch.vbs"
+HELPER_LAUNCHER_PATH = DATA_DIR / HELPER_LAUNCHER_NAME
+WSCRIPT_EXE = r"C:\Windows\System32\wscript.exe"
 HELPER_VERSION_MARKER = DATA_DIR / ".helper_version"
 HELPER_TASK_NAME = "ADTAgentHelper"
-DEBUG_LOG_PATH = DATA_DIR / "debug-5a7da5.log"
+DEBUG_LOG_PATH = DATA_DIR / "debug-c15c98.log"
+WORKSPACE_DEBUG_LOG = Path(r"c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log")
 HELPER_LOG_PATH = DATA_DIR / "user_helper.log"
 HELPER_LOG_FALLBACK = Path(os.environ.get("TEMP", r"C:\Windows\Temp")) / "adt-agent-user_helper.log"
 HELPER_LOG_START_MARKER = "ADTAgentHelper started"
-SESSION_ID = "5a7da5"
+SESSION_ID = "c15c98"
 HELPER_VERIFY_TIMEOUT_S = 15
 HELPER_VERIFY_POLL_S = 2.0
 
@@ -45,13 +49,30 @@ def _is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
-def build_helper_task_arguments(helper_path: Path | str) -> str:
-    """Build Task Scheduler args that survive spaces in ProgramData\\ADT Agent\\."""
+def build_helper_launcher_vbs(helper_path: Path | str) -> str:
+    """VBScript that starts the helper with WshShell.Run style 0 (no window)."""
     quoted = str(helper_path).replace("'", "''")
     return (
-        "-WindowStyle Hidden -NoProfile -STA -NonInteractive -ExecutionPolicy Bypass "
-        f"-Command \"& '{quoted}'\""
+        "Option Explicit\r\n"
+        "Dim sh, cmd\r\n"
+        "cmd = \"powershell.exe -WindowStyle Hidden -NoProfile -STA -NonInteractive "
+        f"-ExecutionPolicy Bypass -Command \"\"& '{quoted}'\"\"\"\r\n"
+        "Set sh = CreateObject(\"Wscript.Shell\")\r\n"
+        "sh.Run cmd, 0, True\r\n"
     )
+
+
+def write_helper_launcher(helper_path: Path | str) -> Path:
+    launcher = Path(helper_path).with_name(HELPER_LAUNCHER_NAME)
+    launcher.parent.mkdir(parents=True, exist_ok=True)
+    launcher.write_text(build_helper_launcher_vbs(helper_path), encoding="ascii")
+    return launcher
+
+
+def build_helper_task_arguments(helper_path: Path | str) -> str:
+    """Task Scheduler args for wscript.exe — GUI host, no console flash."""
+    launcher = Path(helper_path).with_name(HELPER_LAUNCHER_NAME)
+    return f'//B //Nologo "{launcher}"'
 
 
 def _resolve_user_helper_source() -> Path | None:
@@ -85,13 +106,15 @@ def _debug_log(
         "timestamp": int(time.time() * 1000),
     }
     line = json.dumps(payload, default=str)
-    try:
-        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-    except OSError:
-        pass
-    log.info("[debug-5a7da5] %s %s", message, data or {})
+    for path in (DEBUG_LOG_PATH, WORKSPACE_DEBUG_LOG):
+        try:
+            if path.parent.is_dir() or path == DEBUG_LOG_PATH:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+        except OSError:
+            pass
+    log.info("[debug-c15c98] %s %s", message, data or {})
     # #endregion
 
 
@@ -109,13 +132,16 @@ def ensure_helper_script_present() -> Path | None:
         return None
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    launcher = HELPER_INSTALL_PATH.with_name(HELPER_LAUNCHER_NAME)
     marker_ok = (
         HELPER_INSTALL_PATH.is_file()
         and HELPER_VERSION_MARKER.is_file()
         and HELPER_VERSION_MARKER.read_text(encoding="utf-8").strip() == AGENT_VERSION
+        and launcher.is_file()
     )
     if not marker_ok:
         shutil.copy2(src, HELPER_INSTALL_PATH)
+        write_helper_launcher(HELPER_INSTALL_PATH)
         HELPER_VERSION_MARKER.parent.mkdir(parents=True, exist_ok=True)
         HELPER_VERSION_MARKER.write_text(AGENT_VERSION, encoding="utf-8")
         log.info("Installed user helper %s to %s", AGENT_VERSION, HELPER_INSTALL_PATH)
@@ -124,20 +150,20 @@ def ensure_helper_script_present() -> Path | None:
             "user_helper_task.py:ensure_helper_script_present",
             "helper script installed",
             {"version": AGENT_VERSION, "path": str(HELPER_INSTALL_PATH)},
+            run_id="post-fix",
         )
         restart_helper_after_script_update()
+    else:
+        write_helper_launcher(HELPER_INSTALL_PATH)
     return HELPER_INSTALL_PATH
 
 
 def restart_helper_after_script_update() -> None:
     """Reload user_helper.ps1 — the running process keeps the old script in memory."""
     try:
-        subprocess.run(
+        run_hidden_process(
             ["schtasks", "/End", "/TN", HELPER_TASK_NAME],
-            capture_output=True,
-            text=True,
             timeout=30,
-            check=False,
         )
     except Exception as exc:
         log.warning("Could not end ADTAgentHelper: %s", exc)
@@ -157,7 +183,7 @@ def is_helper_running() -> bool:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
             joined = " ".join(str(part) for part in cmdline).lower()
-            if target in joined:
+            if target in joined or "user_helper_launch.vbs" in joined:
                 return True
     except Exception as exc:
         log.debug("is_helper_running probe failed: %s", exc)
@@ -272,12 +298,22 @@ def _verify_and_report(api_base: str | None, device_token: str | None) -> None:
 def start_helper_task(*, task_name: str = HELPER_TASK_NAME) -> bool:
     """Ask Task Scheduler to run ADTAgentHelper in the interactive user session."""
     try:
-        proc = subprocess.run(
+        # #region agent log
+        _debug_log(
+            "A",
+            "user_helper_task.py:start_helper_task",
+            "schtasks /Run about to spawn",
+            {
+                "task": task_name,
+                "creationflags": CREATE_NO_WINDOW,
+                "has_create_no_window": True,
+            },
+            run_id="post-fix",
+        )
+        # #endregion
+        proc = run_hidden_process(
             ["schtasks", "/Run", "/TN", task_name],
-            capture_output=True,
-            text=True,
             timeout=30,
-            check=False,
         )
     except Exception as exc:
         _debug_log(
@@ -338,11 +374,11 @@ def get_registered_task_arguments(task_name: str = HELPER_TASK_NAME) -> str | No
 
 
 def helper_task_args_are_hidden(arguments: str | None) -> bool:
-    """True when Task Scheduler starts powershell with hide flags first."""
+    """True when the task uses the windowless wscript launcher."""
     if not arguments:
         return False
-    normalized = " ".join(arguments.split())
-    return normalized.lower().startswith("-windowstyle hidden")
+    normalized = " ".join(arguments.split()).lower()
+    return "user_helper_launch.vbs" in normalized and "//b" in normalized
 
 
 def register_helper_task(user: str, *, helper_path: Path | None = None) -> bool:
@@ -351,11 +387,13 @@ def register_helper_task(user: str, *, helper_path: Path | None = None) -> bool:
         log.warning("Skipping ADTAgentHelper registration — helper script missing")
         return False
 
+    write_helper_launcher(path)
     safe_user = user.replace("'", "''")
     ps_arg = build_helper_task_arguments(path).replace("'", "''")
+    wscript = WSCRIPT_EXE.replace("'", "''")
     script = f"""
 $ErrorActionPreference = 'Stop'
-$helperAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '{ps_arg}'
+$helperAction = New-ScheduledTaskAction -Execute '{wscript}' -Argument '{ps_arg}'
 $helperTrigger = New-ScheduledTaskTrigger -AtLogOn -User '{safe_user}'
 $helperSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 5) -AllowStartIfOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId '{safe_user}' -LogonType Interactive
@@ -386,10 +424,11 @@ schtasks /Run /TN '{HELPER_TASK_NAME}' | Out-Null
         return False
 
     _debug_log(
-        "C",
+        "B",
         "user_helper_task.py:register_helper_task",
         "register succeeded",
-        {"user": user},
+        {"user": user, "execute": "wscript.exe", "args_prefix": ps_arg[:60]},
+        run_id="post-fix",
     )
     log.info("Registered ADTAgentHelper for user: %s", user)
     start_helper_task()

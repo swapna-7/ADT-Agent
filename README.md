@@ -1,6 +1,6 @@
 # ADT Agent
 
-Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.19).
+Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.20).
 
 ## Windows user-session display helper
 
@@ -11,6 +11,8 @@ The SYSTEM agent (`ADTAgent`) cannot show toasts or set wallpaper directly. A se
 - IPC files in `C:\ProgramData\ADT Agent\`: `pending_display.json`, `display_results.json`
 
 From **2.1.10**, `user_helper.ps1` lives in **`C:\ProgramData\ADT Agent\`** (readable by the logged-in user). The SYSTEM agent registers and starts `ADTAgentHelper` via `schtasks /Run`. Pre-2.1.10 endpoints need a one-time manual fix while logged in at the console (see below).
+
+**2.1.20** starts `ADTAgentHelper` via **`user_helper_launch.vbs`** + `wscript.exe` (style 0) instead of Task Scheduler launching `powershell.exe` directly, eliminating console flashes. Adds `run_hidden_process()` for `schtasks`/`query` and refreshes the VBS launcher whenever the helper script is installed.
 
 **2.1.19** removes temporary self-update debug instrumentation (`_agent_dbg`) from production builds.
 
@@ -32,7 +34,7 @@ After upgrading agents on a machine, verify in Admin PowerShell:
 $install = "C:\Program Files\ADT Agent\adt-agent.exe"
 $staging = "C:\ProgramData\ADT Agent\update\adt-agent.exe"
 $backup  = "C:\Program Files\ADT Agent\adt-agent.old"
-$version = "2.1.19"   # GitHub release tag without v
+$version = "2.1.20"   # GitHub release tag without v
 
 Disable-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
 Disable-ScheduledTask -TaskName ADTAgentHelper -ErrorAction SilentlyContinue

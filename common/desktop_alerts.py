@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -30,6 +31,32 @@ POWERSHELL_TOAST_AUMID = (
 )
 
 _NOTIF_BRANDING: dict[str, Any] = {}
+_DEBUG_LOGS = (
+    Path(r"C:\ProgramData\ADT Agent\debug-c15c98.log"),
+    Path(r"c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log"),
+)
+
+
+def _debug_alert(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+    # #region agent log
+    payload = {
+        "sessionId": "c15c98",
+        "runId": "pre-fix",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    line = json.dumps(payload, default=str)
+    for path in _DEBUG_LOGS:
+        try:
+            if path.parent.is_dir():
+                with path.open("a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+        except OSError:
+            pass
+    # #endregion
 
 
 def set_notif_branding_cache(branding: dict[str, Any] | None) -> None:
@@ -158,6 +185,12 @@ def _deliver_notification(
 
 def _windows_active_username() -> str | None:
     try:
+        _debug_alert(
+            "C",
+            "desktop_alerts.py:_windows_active_username",
+            "query user spawn",
+            {"creationflags": 0},
+        )
         result = subprocess.run(
             ["query", "user"],
             capture_output=True,
@@ -280,6 +313,12 @@ try {{
         handle.write(ps_content)
 
     task_name = "VIZHIToastOnce"
+    _debug_alert(
+        "C",
+        "desktop_alerts.py:_notify_windows_schtasks_toast",
+        "schtasks toast create/run",
+        {"task": task_name, "creationflags": 0, "user": username},
+    )
     create = subprocess.run(
         [
             "schtasks",
