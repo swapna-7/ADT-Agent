@@ -36,9 +36,18 @@ BLOCKED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
+CHOCOLATEY_INSTALL_MARKER = "community.chocolatey.org/install.ps1"
+
+
+def is_chocolatey_install_command(cmd: str) -> bool:
+    return CHOCOLATEY_INSTALL_MARKER.lower() in (cmd or "").lower()
+
+
 def is_blocked_command(cmd: str) -> str | None:
     text = (cmd or "").strip()
     if not text:
+        return None
+    if is_chocolatey_install_command(text):
         return None
     for name, pattern in BLOCKED_PATTERNS:
         if pattern.search(text):

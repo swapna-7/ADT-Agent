@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -261,15 +260,3 @@ def test_ci_smoke_staging_path_includes_space() -> None:
     script = (_WINDOWS / "scripts" / "validate-user-helper.ps1").read_text(encoding="utf-8")
     assert "ADT Agent CI Space" in script
     assert "ProgramData Root" in script
-
-
-def test_debug_log_writes_ndjson(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    log_path = tmp_path / "debug-c15c98.log"
-    monkeypatch.setattr(uht, "DEBUG_LOG_PATH", log_path)
-    monkeypatch.setattr(uht, "WORKSPACE_DEBUG_LOG", tmp_path / "missing" / "debug-c15c98.log")
-    uht._debug_log("A", "test", "hello", {"k": 1}, run_id="test-run")
-    lines = log_path.read_text(encoding="utf-8").strip().splitlines()
-    assert len(lines) == 1
-    payload = json.loads(lines[0])
-    assert payload["hypothesisId"] == "A"
-    assert payload["sessionId"] == "c15c98"

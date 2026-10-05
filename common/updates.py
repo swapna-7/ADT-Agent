@@ -59,6 +59,14 @@ def _run(
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str] | None:
     try:
+        if _is_windows():
+            from hidden_ps import run_hidden_process
+
+            return run_hidden_process(
+                cmd,
+                timeout=timeout,
+                env=env,
+            )
         return subprocess.run(
             cmd,
             capture_output=True,

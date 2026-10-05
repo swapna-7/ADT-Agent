@@ -1,23 +1,13 @@
-"""Run PowerShell without a visible console window.
-
-Windows still flashes a console if powershell.exe is started without CREATE_NO_WINDOW
-and -WindowStyle Hidden as the first arguments.
-"""
+"""Run PowerShell and console tools without a visible window on Windows."""
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
-import time
-from pathlib import Path
 from typing import Any
 
 CREATE_NO_WINDOW = 0x08000000
-_DEBUG_LOGS = (
-    Path(r"C:\ProgramData\ADT Agent\debug-c15c98.log"),
-    Path(r"c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log"),
-)
+DETACHED_PROCESS = 0x00000008
 
 
 def _startupinfo() -> subprocess.STARTUPINFO | None:
@@ -43,35 +33,13 @@ def hidden_powershell_argv(*tail: str) -> list[str]:
     ]
 
 
-def _debug_hidden_ps(message: str, data: dict[str, Any]) -> None:
-    # #region agent log
-    payload = {
-        "sessionId": "c15c98",
-        "runId": "pre-fix",
-        "hypothesisId": "D",
-        "location": "hidden_ps.py:run_hidden_powershell",
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    line = json.dumps(payload, default=str)
-    for path in _DEBUG_LOGS:
-        try:
-            if path.parent.is_dir():
-                with path.open("a", encoding="utf-8") as fh:
-                    fh.write(line + "\n")
-        except OSError:
-            pass
-    # #endregion
-
-
 def run_hidden_process(
     argv: list[str],
     *,
     timeout: int,
     **kwargs: Any,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a console exe (schtasks, query, …) without mapping a window."""
+    """Run a console exe (schtasks, query, choco, …) without mapping a window."""
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
     return subprocess.run(
         argv,
@@ -85,6 +53,18 @@ def run_hidden_process(
     )
 
 
+run_hidden = run_hidden_process
+
+
+def popen_hidden(argv: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
+    """Start a background process without a visible console window."""
+    if sys.platform == "win32":
+        kwargs.setdefault("creationflags", CREATE_NO_WINDOW | DETACHED_PROCESS)
+        kwargs.setdefault("startupinfo", _startupinfo())
+        kwargs.setdefault("close_fds", True)
+    return subprocess.Popen(argv, **kwargs)
+
+
 def run_hidden_powershell(
     script: str,
     *,
@@ -94,14 +74,6 @@ def run_hidden_powershell(
 ) -> subprocess.CompletedProcess[str]:
     argv = hidden_powershell_argv(*(extra_args or []), "-Command", script)
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
-    _debug_hidden_ps(
-        "hidden powershell spawn",
-        {
-            "creationflags": flags,
-            "timeout": timeout,
-            "script_prefix": (script or "").replace("\n", " ")[:80],
-        },
-    )
     return subprocess.run(
         argv,
         capture_output=True,

@@ -53,6 +53,7 @@ from self_update import (
     maybe_apply_update,
     next_check_deadline,
     read_auto_update_flag,
+    restart_after_update,
     should_self_update,
 )
 from updates import scan_updates
@@ -987,7 +988,7 @@ def main() -> None:
                                 logging.info(
                                     "Agent binary replaced; exiting so launchd restarts"
                                 )
-                                raise SystemExit(0)
+                                restart_after_update()
                         except SystemExit:
                             raise
                         except Exception:

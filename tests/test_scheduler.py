@@ -6,7 +6,13 @@ import time
 from pathlib import Path
 
 from config_io import load_config, load_local_config
-from scheduler import load_last_runs, mark_run, should_run
+from scheduler import (
+    consume_update_scan_request,
+    load_last_runs,
+    mark_run,
+    request_update_scan,
+    should_run,
+)
 
 
 def test_last_runs_persisted(tmp_path: Path):
@@ -39,3 +45,10 @@ def test_last_runs_survive_load_local_config_roundtrip(tmp_path: Path):
 
     assert should_run("inventory", last_runs, interval, now + 100) is False
     assert reloaded["DEVICE_TOKEN"] == "vzd_x"
+
+
+def test_request_update_scan_flag():
+    assert consume_update_scan_request() is False
+    request_update_scan()
+    assert consume_update_scan_request() is True
+    assert consume_update_scan_request() is False

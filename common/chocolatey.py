@@ -9,9 +9,15 @@ import shutil
 import subprocess
 from typing import Any
 
+from hidden_ps import run_hidden_process
+
 log = logging.getLogger(__name__)
 
 CHOCO_FIXED = r"C:\ProgramData\chocolatey\bin\choco.exe"
+
+
+def _run_choco(argv: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    return run_hidden_process(argv, timeout=timeout)
 
 
 def detect_chocolatey() -> dict[str, Any]:
@@ -21,13 +27,7 @@ def detect_chocolatey() -> dict[str, Any]:
         return {"chocolatey": False, "choco_path": None, "choco_version": None}
     version: str | None = None
     try:
-        result = subprocess.run(
-            [choco_path, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
+        result = _run_choco([choco_path, "--version"], timeout=15)
         if result.returncode == 0:
             version = (result.stdout or "").strip() or None
     except Exception:
@@ -42,12 +42,9 @@ def detect_chocolatey() -> dict[str, Any]:
 def scan_chocolatey_installed(choco_path: str) -> list[dict[str, Any]]:
     """Installed packages from choco list --local-only."""
     try:
-        result = subprocess.run(
+        result = _run_choco(
             [choco_path, "list", "--local-only", "--limit-output", "--no-color"],
-            capture_output=True,
-            text=True,
             timeout=60,
-            check=False,
         )
     except Exception as exc:
         log.warning("choco list failed: %s", exc)
@@ -77,12 +74,9 @@ def scan_chocolatey_installed(choco_path: str) -> list[dict[str, Any]]:
 def scan_chocolatey_outdated(choco_path: str) -> list[dict[str, Any]]:
     """Packages Chocolatey reports as outdated."""
     try:
-        result = subprocess.run(
+        result = _run_choco(
             [choco_path, "outdated", "--limit-output", "--no-color"],
-            capture_output=True,
-            text=True,
             timeout=120,
-            check=False,
         )
     except Exception as exc:
         log.warning("choco outdated failed: %s", exc)
@@ -407,14 +401,7 @@ def install_choco_package(
     if safe_version:
         cmd.extend(["--version", safe_version, "--ignore-checksums"])
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            check=False,
-            shell=False,
-        )
+        proc = _run_choco(cmd, timeout=600)
     except subprocess.TimeoutExpired:
         return {
             "exit_code": -1,
@@ -438,7 +425,7 @@ def install_choco_package(
 
     version_after: str | None = None
     try:
-        verify = subprocess.run(
+        verify = _run_choco(
             [
                 choco_path,
                 "list",
@@ -447,11 +434,7 @@ def install_choco_package(
                 "--exact",
                 safe_id,
             ],
-            capture_output=True,
-            text=True,
             timeout=15,
-            check=False,
-            shell=False,
         )
         for line in (verify.stdout or "").splitlines():
             if "|" in line and line.split("|")[0].strip().lower() == safe_id:

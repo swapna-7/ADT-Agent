@@ -48,12 +48,20 @@ from report import (
     report_telemetry,
     report_updates,
 )
-from scheduler import load_last_runs, mark_run, resolve_intervals, should_run
+from scheduler import (
+    consume_update_scan_request,
+    load_last_runs,
+    mark_run,
+    request_update_scan,
+    resolve_intervals,
+    should_run,
+)
 from self_update import (
     cleanup_previous_backup,
     maybe_apply_update,
     next_check_deadline,
     read_auto_update_flag,
+    restart_after_update,
     should_self_update,
 )
 from software_quality import filter_software_rows, is_plausible_software_row
@@ -337,8 +345,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart={INSTALL_BIN}
-Restart=on-failure
-RestartSec=60
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
 StandardInput=null
 StandardOutput=journal
 StandardError=journal
@@ -363,8 +372,9 @@ After=network-online.target
 [Service]
 Type=simple
 ExecStart={INSTALL_BIN}
-Restart=on-failure
-RestartSec=60
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=default.target
@@ -1236,6 +1246,14 @@ def process_pending_commands(
             continue
         logging.info("Executing command id=%s", command_id)
         result_text = execute_shell_command(command_text, timeout_seconds)
+        cmd_lower = command_text.lower()
+        exit_match = re.match(r"exit_code=(\d+)", result_text)
+        exit_code = int(exit_match.group(1)) if exit_match else -1
+        if exit_code == 0 and ("chocolatey" in cmd_lower or "choco" in cmd_lower):
+            logging.info(
+                "Chocolatey-related command succeeded — triggering immediate update scan"
+            )
+            request_update_scan()
         report_command_result(api_base, device_token, command_id, result_text, session=session)
         logging.info("Saved result for command id=%s", command_id)
     return False
@@ -1438,7 +1456,7 @@ def main() -> None:
                                 logging.info(
                                     "Agent binary replaced; exiting so systemd restarts"
                                 )
-                                raise SystemExit(0)
+                                restart_after_update()
                         except SystemExit:
                             raise
                         except Exception:
@@ -1493,7 +1511,9 @@ def main() -> None:
                     except Exception as exc:
                         logging.exception("Metric cycle %s failed: %s", cycle, exc)
 
-                if should_run("update_scan", last_runs, intervals["update_scan"], now_ts):
+                if consume_update_scan_request() or should_run(
+                    "update_scan", last_runs, intervals["update_scan"], now_ts
+                ):
                     try:
                         logging.info("Starting update scan (may take several minutes)")
                         scan = scan_updates(

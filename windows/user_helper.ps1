@@ -164,31 +164,7 @@ function Ensure-ToastTypes {
     [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime]
 }
 
-$hideInfo = Hide-HelperWindow
-# #region agent log
-try {
-    $dbgPayload = @{
-        sessionId = 'c15c98'
-        runId = 'pre-fix'
-        hypothesisId = 'B'
-        location = 'user_helper.ps1:start'
-        message = 'helper started hide-window'
-        data = @{
-            pid = $PID
-            consoleHwnd = $hideInfo.consoleHwnd
-            mainHwnd = $hideInfo.mainHwnd
-            freed = $hideInfo.freed
-        }
-        timestamp = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
-    } | ConvertTo-Json -Compress
-    foreach ($dbgPath in @(
-        (Join-Path $DataDir 'debug-c15c98.log'),
-        'c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log'
-    )) {
-        try { Add-Content -LiteralPath $dbgPath -Value $dbgPayload -Encoding utf8 } catch {}
-    }
-} catch {}
-# #endregion
+Hide-HelperWindow | Out-Null
 Load-ShownIds
 Write-HelperLog 'ADTAgentHelper started (pid=' + $PID + ')'
 $staleMarked = Mark-StalePendingIds

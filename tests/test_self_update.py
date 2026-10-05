@@ -19,6 +19,7 @@ from self_update import (  # noqa: E402
     parse_semver,
     read_auto_update_flag,
     replace_installed_binary,
+    restart_after_update,
     should_self_update,
     usable_verify_key_bytes,
 )
@@ -228,6 +229,31 @@ def test_download_succeeds_when_baked_key_is_malformed(
         api_base="https://vizhi.rcsaware.com",
     )
     assert dest.read_bytes() == payload
+
+
+def test_restart_after_update_windows_schedules_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import platform
+    from unittest.mock import MagicMock
+
+    popen = MagicMock()
+    monkeypatch.setattr("hidden_ps.popen_hidden", popen)
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    with pytest.raises(SystemExit) as exc:
+        restart_after_update()
+    assert exc.value.code == 0
+    popen.assert_called_once()
+    assert popen.call_args.args[0][0] == "cmd"
+
+
+def test_restart_after_update_linux_exits_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    import platform
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    with pytest.raises(SystemExit) as exc:
+        restart_after_update()
+    assert exc.value.code == 0
 
 
 def test_failed_check_retries_in_minutes(monkeypatch: pytest.MonkeyPatch) -> None:

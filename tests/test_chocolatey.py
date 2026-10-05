@@ -19,7 +19,7 @@ def test_choco_list_parse():
     mock_result = MagicMock()
     mock_result.returncode = 0
     mock_result.stdout = "firefox|154.0\ngooglechrome|124.0.1234.56\n"
-    with patch.object(chocolatey.subprocess, "run", return_value=mock_result):
+    with patch.object(chocolatey, "_run_choco", return_value=mock_result):
         rows = chocolatey.scan_chocolatey_installed(r"C:\ProgramData\chocolatey\bin\choco.exe")
     assert len(rows) == 2
     assert rows[0]["choco_id"] == "firefox"
@@ -31,7 +31,7 @@ def test_choco_outdated_parse():
     mock_result = MagicMock()
     mock_result.returncode = 0
     mock_result.stdout = "firefox|152.0.4|154.0|false\n7zip|23.01|24.09|false\n"
-    with patch.object(chocolatey.subprocess, "run", return_value=mock_result):
+    with patch.object(chocolatey, "_run_choco", return_value=mock_result):
         rows = chocolatey.scan_chocolatey_outdated(r"C:\ProgramData\chocolatey\bin\choco.exe")
     assert len(rows) == 2
     assert rows[0]["choco_id"] == "firefox"
@@ -43,7 +43,7 @@ def test_choco_outdated_pinned_skipped():
     mock_result = MagicMock()
     mock_result.returncode = 0
     mock_result.stdout = "firefox|152.0.4|154.0|true\n"
-    with patch.object(chocolatey.subprocess, "run", return_value=mock_result):
+    with patch.object(chocolatey, "_run_choco", return_value=mock_result):
         rows = chocolatey.scan_chocolatey_outdated(r"C:\ProgramData\chocolatey\bin\choco.exe")
     assert rows == []
 
@@ -52,7 +52,7 @@ def test_choco_outdated_exit_2_treated_as_success():
     mock_result = MagicMock()
     mock_result.returncode = 2
     mock_result.stdout = ""
-    with patch.object(chocolatey.subprocess, "run", return_value=mock_result):
+    with patch.object(chocolatey, "_run_choco", return_value=mock_result):
         rows = chocolatey.scan_chocolatey_outdated(r"C:\ProgramData\chocolatey\bin\choco.exe")
     assert rows == []
 
@@ -95,7 +95,7 @@ def test_choco_install_success():
     upgrade = MagicMock(returncode=0, stdout=" upgraded ", stderr="")
     verify = MagicMock(returncode=0, stdout="firefox|154.0\n", stderr="")
     manifest = [{"choco_id": "firefox", "canonical_id": "mozilla-firefox"}]
-    with patch.object(chocolatey.subprocess, "run", side_effect=[upgrade, verify]):
+    with patch.object(chocolatey, "_run_choco", side_effect=[upgrade, verify]):
         result = chocolatey.install_choco_package(
             r"C:\ProgramData\chocolatey\bin\choco.exe",
             "firefox",
@@ -128,7 +128,7 @@ def test_choco_merge_inventory():
 
 
 def test_install_rejects_empty_manifest_without_subprocess():
-    with patch.object(chocolatey.subprocess, "run") as run:
+    with patch.object(chocolatey, "_run_choco") as run:
         result = chocolatey.install_choco_package(
             r"C:\ProgramData\chocolatey\bin\choco.exe",
             "firefox",
@@ -141,7 +141,7 @@ def test_install_rejects_empty_manifest_without_subprocess():
 
 def test_install_rejects_malformed_id_without_subprocess():
     manifest = [{"choco_id": "firefox"}]
-    with patch.object(chocolatey.subprocess, "run") as run:
+    with patch.object(chocolatey, "_run_choco") as run:
         result = chocolatey.install_choco_package(
             r"C:\ProgramData\chocolatey\bin\choco.exe",
             "bad;id && calc",
@@ -161,8 +161,8 @@ def test_install_argv_only_allowlisted_id():
     mock_list.returncode = 0
     mock_list.stdout = "googlechrome|131.0.0\n"
     with patch.object(
-        chocolatey.subprocess,
-        "run",
+        chocolatey,
+        "_run_choco",
         side_effect=[mock_upgrade, mock_list],
     ) as run:
         result = chocolatey.install_choco_package(
@@ -177,7 +177,7 @@ def test_install_argv_only_allowlisted_id():
     assert upgrade_cmd[2] == "googlechrome"
     assert "--version" in upgrade_cmd
     assert "131.0.0" in upgrade_cmd
-    assert run.call_args_list[0].kwargs.get("shell") is False
+    assert run.call_args_list[0].kwargs["timeout"] == 600
 
 
 def test_merge_choco_annotates_registry_single_row():

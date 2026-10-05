@@ -432,3 +432,36 @@ def maybe_apply_update(
 
     log.info("Installed agent %s at %s", remote_version, install_exe)
     return "installed"
+
+
+def restart_after_update() -> None:
+    """Exit after self-update so the supervisor starts the new binary."""
+    import platform
+
+    system = platform.system()
+    if system == "Windows":
+        try:
+            from hidden_ps import popen_hidden
+
+            popen_hidden(
+                [
+                    "cmd",
+                    "/C",
+                    "timeout /T 3 /NOBREAK >nul && "
+                    'schtasks /Run /TN "ADTAgent" >nul 2>&1',
+                ],
+            )
+            log.info("Auto-update: scheduled task restart in 3s")
+        except Exception as exc:
+            log.warning("Could not schedule task restart: %s", exc)
+        raise SystemExit(0)
+
+    if system == "Linux":
+        log.info("Auto-update: exiting so systemd restarts the service")
+        raise SystemExit(0)
+
+    if system == "Darwin":
+        log.info("Auto-update: exiting so launchd restarts the agent")
+        raise SystemExit(0)
+
+    raise SystemExit(0)

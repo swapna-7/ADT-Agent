@@ -9,6 +9,22 @@ from typing import Any
 
 from config_io import load_config, write_config
 
+_force_update_scan = False
+
+
+def request_update_scan() -> None:
+    global _force_update_scan
+    _force_update_scan = True
+
+
+def consume_update_scan_request() -> bool:
+    global _force_update_scan
+    if _force_update_scan:
+        _force_update_scan = False
+        return True
+    return False
+
+
 DEFAULT_INTERVALS: dict[str, int] = {
     "metrics": 900,
     "inventory": 21600,

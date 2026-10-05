@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import socket
 import subprocess
@@ -26,7 +27,7 @@ from command_poller import start_command_poller
 from config_io import load_config, load_local_config, write_config
 from device_session import DeviceSession
 from enrollment import platform_tag, system_hostname, system_username
-from hidden_ps import run_hidden_powershell
+from hidden_ps import run_hidden_process, run_hidden_powershell
 from first_run import needs_enrollment, prompt_and_enroll
 from inventory_windows import collect_windows_inventory
 from patch_runner import start_patch_poller
@@ -38,12 +39,20 @@ from report import (
     report_telemetry,
     report_updates,
 )
-from scheduler import load_last_runs, mark_run, resolve_intervals, should_run
+from scheduler import (
+    consume_update_scan_request,
+    load_last_runs,
+    mark_run,
+    request_update_scan,
+    resolve_intervals,
+    should_run,
+)
 from self_update import (
     cleanup_previous_backup,
     maybe_apply_update,
     next_check_deadline,
     read_auto_update_flag,
+    restart_after_update,
     should_self_update,
 )
 from software_quality import filter_software_rows, is_plausible_software_row
@@ -126,11 +135,14 @@ def find_env_file() -> Path:
 
 
 def stop_scheduled_task() -> None:
-    subprocess.run(["schtasks", "/End", "/TN", TASK_NAME], check=False)
+    run_hidden_process(["schtasks", "/End", "/TN", TASK_NAME], timeout=30)
 
 
 def disable_scheduled_task() -> None:
-    subprocess.run(["schtasks", "/Change", "/TN", TASK_NAME, "/DISABLE"], check=False)
+    run_hidden_process(
+        ["schtasks", "/Change", "/TN", TASK_NAME, "/DISABLE"],
+        timeout=30,
+    )
 
 
 def is_admin() -> bool:
@@ -187,10 +199,11 @@ def register_scheduled_task() -> None:
     script = f"""
 $ErrorActionPreference = 'Stop'
 $action = New-ScheduledTaskAction -Execute '{exe}'
-$trigger = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable -AllowStartIfOnBatteries -RunOnlyIfNetworkAvailable
+$triggerStartup = New-ScheduledTaskTrigger -AtStartup
+$triggerRepeat = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 5) -Once -At (Get-Date)
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -RunOnlyIfNetworkAvailable -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $action -Trigger @($triggerStartup, $triggerRepeat) -Settings $settings -Principal $principal -Force | Out-Null
 """
     proc = run_hidden_powershell(script, timeout=60)
     if proc.returncode != 0:
@@ -223,7 +236,7 @@ def install_windows_agent() -> None:
 
 
 def start_installed_agent() -> None:
-    subprocess.run(["schtasks", "/Run", "/TN", TASK_NAME], check=False)
+    run_hidden_process(["schtasks", "/Run", "/TN", TASK_NAME], timeout=30)
 
 
 def _safe_reg_read(key: Any, name: str) -> str | None:
@@ -520,17 +533,16 @@ def get_gpu_metrics() -> dict[str, object]:
     }
 
     try:
-        result = subprocess.run(
+        result = run_hidden_process(
             [
                 "nvidia-smi",
                 "--query-gpu=name,temperature.gpu,utilization.gpu",
                 "--format=csv,noheader,nounits",
             ],
-            capture_output=True,
-            text=True,
             timeout=10,
-            check=True,
         )
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, result.args)
         line = (result.stdout or "").strip().splitlines()[0].strip()
         if line:
             parts = [part.strip() for part in line.split(",")]
@@ -896,6 +908,17 @@ def process_pending_commands(
             continue
         logging.info("Executing command id=%s", command_id)
         result_text = execute_powershell_command(command_text, timeout_seconds)
+        cmd_lower = command_text.lower()
+        exit_match = re.match(r"exit_code=(\d+)", result_text)
+        exit_code = int(exit_match.group(1)) if exit_match else -1
+        if (
+            exit_code == 0
+            and ("chocolatey" in cmd_lower or "choco" in cmd_lower)
+        ):
+            logging.info(
+                "Chocolatey-related command succeeded — triggering immediate update scan"
+            )
+            request_update_scan()
         report_command_result(api_base, device_token, command_id, result_text, session=session)
         logging.info("Saved result for command id=%s", command_id)
     return False
@@ -1151,7 +1174,7 @@ def main() -> None:
                                 logging.info(
                                     "Agent binary replaced; exiting so the scheduled task restarts"
                                 )
-                                raise SystemExit(0)
+                                restart_after_update()
                         except SystemExit:
                             raise
                         except Exception:
@@ -1223,7 +1246,9 @@ def main() -> None:
                     except Exception as exc:
                         logging.exception("Metric cycle %s failed: %s", cycle, exc)
 
-                if should_run("update_scan", last_runs, intervals["update_scan"], now_ts):
+                if consume_update_scan_request() or should_run(
+                    "update_scan", last_runs, intervals["update_scan"], now_ts
+                ):
                     try:
                         logging.info("Starting update scan (may take several minutes)")
                         scan = scan_updates(

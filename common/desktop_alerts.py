@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -31,32 +30,6 @@ POWERSHELL_TOAST_AUMID = (
 )
 
 _NOTIF_BRANDING: dict[str, Any] = {}
-_DEBUG_LOGS = (
-    Path(r"C:\ProgramData\ADT Agent\debug-c15c98.log"),
-    Path(r"c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log"),
-)
-
-
-def _debug_alert(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
-    # #region agent log
-    payload = {
-        "sessionId": "c15c98",
-        "runId": "pre-fix",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    line = json.dumps(payload, default=str)
-    for path in _DEBUG_LOGS:
-        try:
-            if path.parent.is_dir():
-                with path.open("a", encoding="utf-8") as fh:
-                    fh.write(line + "\n")
-        except OSError:
-            pass
-    # #endregion
 
 
 def set_notif_branding_cache(branding: dict[str, Any] | None) -> None:
@@ -183,20 +156,23 @@ def _deliver_notification(
         _notify_linux(title, message, severity)
 
 
+def _run_hidden(argv: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    if sys.platform == "win32":
+        from hidden_ps import run_hidden_process
+
+        return run_hidden_process(argv, timeout=timeout)
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
 def _windows_active_username() -> str | None:
     try:
-        _debug_alert(
-            "C",
-            "desktop_alerts.py:_windows_active_username",
-            "query user spawn",
-            {"creationflags": 0},
-        )
-        result = subprocess.run(
-            ["query", "user"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        result = _run_hidden(["query", "user"], timeout=10)
         for line in result.stdout.splitlines():
             if ">" in line or "Active" in line:
                 parts = line.split()
@@ -214,7 +190,7 @@ def _time_in_one_minute() -> str:
 def _notify_windows_eventlog(title: str, message: str, severity: str) -> None:
     del severity
     text = f"{title}: {message}"[:800]
-    subprocess.run(
+    _run_hidden(
         [
             "eventcreate",
             "/T",
@@ -228,9 +204,7 @@ def _notify_windows_eventlog(title: str, message: str, severity: str) -> None:
             "/D",
             text,
         ],
-        capture_output=True,
         timeout=10,
-        check=False,
     )
 
 
@@ -313,13 +287,7 @@ try {{
         handle.write(ps_content)
 
     task_name = "VIZHIToastOnce"
-    _debug_alert(
-        "C",
-        "desktop_alerts.py:_notify_windows_schtasks_toast",
-        "schtasks toast create/run",
-        {"task": task_name, "creationflags": 0, "user": username},
-    )
-    create = subprocess.run(
+    create = _run_hidden(
         [
             "schtasks",
             "/Create",
@@ -337,8 +305,6 @@ try {{
             "/RL",
             "LIMITED",
         ],
-        capture_output=True,
-        text=True,
         timeout=15,
     )
     if create.returncode != 0:
@@ -348,12 +314,7 @@ try {{
         )
         return False
 
-    run = subprocess.run(
-        ["schtasks", "/Run", "/TN", task_name],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    run = _run_hidden(["schtasks", "/Run", "/TN", task_name], timeout=10)
     if run.returncode != 0:
         log.warning("schtasks run failed: %s", (run.stderr or run.stdout or "")[:300])
         return False
@@ -371,15 +332,15 @@ try {{
         except OSError:
             continue
 
-    subprocess.Popen(
+    from hidden_ps import popen_hidden
+
+    popen_hidden(
         [
             "cmd",
             "/C",
             f'timeout /T 5 && schtasks /Delete /F /TN {task_name} '
             f'&& del /F "{tmp}" & del /F "{result_file}"',
         ],
-        creationflags=getattr(subprocess, "DETACHED_PROCESS", 0x00000008),
-        close_fds=True,
     )
 
     if status == "ok":
@@ -434,10 +395,8 @@ def _notify_windows(
     # msg.exe is a last-resort visible dialog (often disabled on modern Windows).
     if username:
         try:
-            msg = subprocess.run(
+            msg = _run_hidden(
                 ["msg", username, f"{title_safe}: {message_safe}"],
-                capture_output=True,
-                text=True,
                 timeout=15,
             )
             if msg.returncode == 0:

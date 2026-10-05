@@ -1,4 +1,10 @@
-from command_policy import command_age_expired, is_blocked_command
+from command_policy import command_age_expired, is_blocked_command, is_chocolatey_install_command
+
+CHOCOLATEY_INSTALL_COMMAND = (
+    "Set-ExecutionPolicy Bypass -Scope Process -Force; "
+    "iex ((New-Object Net.WebClient).DownloadString("
+    "'https://community.chocolatey.org/install.ps1'))"
+)
 
 
 def test_blocked_commands():
@@ -6,6 +12,11 @@ def test_blocked_commands():
     assert is_blocked_command("shutdown /s") == "shutdown"
     assert is_blocked_command("winget install foo") == "winget"
     assert is_blocked_command("iex Get-Process") == "iex"
+
+
+def test_chocolatey_install_allowed():
+    assert is_chocolatey_install_command(CHOCOLATEY_INSTALL_COMMAND)
+    assert is_blocked_command(CHOCOLATEY_INSTALL_COMMAND) is None
 
 
 def test_allowed_diagnostics():

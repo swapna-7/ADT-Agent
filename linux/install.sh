@@ -33,8 +33,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/opt/vizhi-agent/adt-agent
-Restart=on-failure
-RestartSec=60
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
 StandardInput=null
 StandardOutput=journal
 StandardError=journal

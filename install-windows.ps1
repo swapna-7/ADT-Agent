@@ -102,14 +102,18 @@ $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRul
 Set-Acl $installDir $acl
 
 $action = New-ScheduledTaskAction -Execute $installExe
-$trigger = New-ScheduledTaskTrigger -AtStartup
+$triggerStartup = New-ScheduledTaskTrigger -AtStartup
+$triggerRepeat = New-ScheduledTaskTrigger `
+    -RepetitionInterval (New-TimeSpan -Minutes 5) `
+    -Once `
+    -At (Get-Date)
 $settings = New-ScheduledTaskSettingsSet `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
-    -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -StartWhenAvailable `
-    -AllowStartIfOnBatteries `
-    -RunOnlyIfNetworkAvailable
+    -RunOnlyIfNetworkAvailable `
+    -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal `
     -UserId 'SYSTEM' `
     -LogonType ServiceAccount `
@@ -117,7 +121,7 @@ $principal = New-ScheduledTaskPrincipal `
 Register-ScheduledTask `
     -TaskName 'ADTAgent' `
     -Action $action `
-    -Trigger $trigger `
+    -Trigger @($triggerStartup, $triggerRepeat) `
     -Settings $settings `
     -Principal $principal `
     -Force | Out-Null

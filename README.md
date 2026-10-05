@@ -12,9 +12,9 @@ The SYSTEM agent (`ADTAgent`) cannot show toasts or set wallpaper directly. A se
 
 From **2.1.10**, `user_helper.ps1` lives in **`C:\ProgramData\ADT Agent\`** (readable by the logged-in user). The SYSTEM agent registers and starts `ADTAgentHelper` via `schtasks /Run`. Pre-2.1.10 endpoints need a one-time manual fix while logged in at the console (see below).
 
-**2.1.20** starts `ADTAgentHelper` via **`user_helper_launch.vbs`** + `wscript.exe` (style 0) instead of Task Scheduler launching `powershell.exe` directly, eliminating console flashes. Adds `run_hidden_process()` for `schtasks`/`query` and refreshes the VBS launcher whenever the helper script is installed.
+**2.1.20** fixes post-update restart on Windows (explicit `schtasks /Run` + 5-minute task repetition fallback) and Linux (`Restart=always` in systemd). All agent subprocess calls on Windows use `hidden_ps` (`CREATE_NO_WINDOW`). Portal Console tab adds a one-click **Install Chocolatey** action with immediate capability rescan.
 
-**2.1.19** removes temporary self-update debug instrumentation (`_agent_dbg`) from production builds.
+**2.1.19** starts `ADTAgentHelper` via **`user_helper_launch.vbs`** + `wscript.exe` (style 0) instead of Task Scheduler launching `powershell.exe` directly. Removes temporary self-update debug instrumentation (`_agent_dbg`) from production builds.
 
 **2.1.18** runs PowerShell via `hidden_ps` (`CREATE_NO_WINDOW`, `-WindowStyle Hidden` first) so agent/helper/branding jobs do not flash a console. Self-update checks ~15s after start and retries failed probes in 5 minutes instead of waiting the full interval.
 
@@ -27,6 +27,32 @@ From **2.1.10**, `user_helper.ps1` lives in **`C:\ProgramData\ADT Agent\`** (rea
 **2.1.13** verifies `user_helper.ps1` in CI (`windows/scripts/validate-user-helper.ps1`) and reports display-helper health to the portal via `POST /api/agent/helper-status`.
 
 **2.1.10** allows Supabase Storage public branding URLs (`*.supabase.co/storage/v1/object/public/…`) so wallpaper/lockscreen jobs no longer fail with “Untrusted image URL”.
+
+### Re-register ADTAgent on existing Windows endpoints
+
+Endpoints deployed before 2.1.20 may still have an AtStartup-only task. Re-register without uninstalling (agent keeps running):
+
+```powershell
+# Or run: scripts/reregister-adtagent-task.ps1
+$agentPath = "C:\Program Files\ADT Agent\adt-agent.exe"
+$action = New-ScheduledTaskAction -Execute $agentPath
+$triggerStartup = New-ScheduledTaskTrigger -AtStartup
+$triggerRepeat = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 5) -Once -At (Get-Date)
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -RunOnlyIfNetworkAvailable -MultipleInstances IgnoreNew
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName "ADTAgent" -Action $action -Trigger @($triggerStartup, $triggerRepeat) -Settings $settings -Principal $principal -Force | Out-Null
+```
+
+### Linux: upgrade systemd unit on existing installs
+
+```bash
+sudo sed -i 's/Restart=on-failure/Restart=always/' /etc/systemd/system/adt-agent.service
+sudo sed -i 's/RestartSec=60/RestartSec=5/' /etc/systemd/system/adt-agent.service
+grep -q StartLimitIntervalSec /etc/systemd/system/adt-agent.service || \
+  sudo sed -i '/\[Service\]/a StartLimitIntervalSec=0' /etc/systemd/system/adt-agent.service
+sudo systemctl daemon-reload
+sudo systemctl restart adt-agent
+```
 
 After upgrading agents on a machine, verify in Admin PowerShell:
 
