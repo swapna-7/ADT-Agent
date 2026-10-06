@@ -37,6 +37,8 @@ if (-not $python) {
 Write-Host "==> Installing build dependencies"
 & $python.Path -m pip install --upgrade pip | Out-Null
 & $python.Path -m pip install -r requirements.txt
+# setuptools 82+ makes pkg_resources import jaraco; a missing jaraco bricks the frozen exe at boot.
+& $python.Path -m pip install "setuptools>=70,<81"
 
 $pyinstaller = (Get-Command pyinstaller -ErrorAction SilentlyContinue)
 if (-not $pyinstaller) {
@@ -91,6 +93,9 @@ $pyiArgs = @(
     '--hidden-import', 'inventory_windows',
     '--hidden-import', 'display_ipc',
     '--hidden-import', 'user_helper_task',
+    '--hidden-import', 'jaraco',
+    '--hidden-import', 'jaraco.text',
+    '--collect-all', 'jaraco',
     '--add-data', "$apiConfig;."
 )
 
