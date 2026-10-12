@@ -1,6 +1,6 @@
 # ADT Agent
 
-Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.21).
+Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.22).
 
 ## Windows user-session display helper
 
@@ -12,7 +12,9 @@ The SYSTEM agent (`ADTAgent`) cannot show toasts or set wallpaper directly. A se
 
 From **2.1.10**, `user_helper.ps1` lives in **`C:\ProgramData\ADT Agent\`** (readable by the logged-in user). The SYSTEM agent registers and starts `ADTAgentHelper` via `schtasks /Run`. Pre-2.1.10 endpoints need a one-time manual fix while logged in at the console (see below).
 
-**2.1.21** pins `setuptools<81` and bundles `jaraco` in the Windows PyInstaller build so frozen `adt-agent.exe` does not fail at boot with a missing `pkg_resources`/jaraco import.
+**2.1.22** excludes `pkg_resources` / `setuptools` / `jaraco` from the Windows freeze so PyInstaller does not inject `pyi_rth_pkgres.py` (2.1.21 crashed at boot before enroll or auto-update). Post-update `schtasks /Run` is started with `CREATE_BREAKAWAY_FROM_JOB` so the restart child outlives the old process.
+
+**2.1.21** pinned `setuptools<81` and bundled `jaraco`; that still left `pyi_rth_pkgres` in the exe and the binary did not start.
 
 **2.1.20** fixes post-update restart on Windows (explicit `schtasks /Run` + 5-minute task repetition fallback) and Linux (`Restart=always` in systemd). All agent subprocess calls on Windows use `hidden_ps` (`CREATE_NO_WINDOW`). Portal Console tab adds a one-click **Install Chocolatey** action with immediate capability rescan.
 
@@ -62,7 +64,7 @@ After upgrading agents on a machine, verify in Admin PowerShell:
 $install = "C:\Program Files\ADT Agent\adt-agent.exe"
 $staging = "C:\ProgramData\ADT Agent\update\adt-agent.exe"
 $backup  = "C:\Program Files\ADT Agent\adt-agent.old"
-$version = "2.1.21"   # GitHub release tag without v
+$version = "2.1.22"   # GitHub release tag without v
 
 Disable-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
 Disable-ScheduledTask -TaskName ADTAgentHelper -ErrorAction SilentlyContinue

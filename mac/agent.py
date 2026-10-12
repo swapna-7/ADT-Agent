@@ -830,6 +830,7 @@ def resolve_data_dir() -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Vizhi Agent (macOS)")
+    parser.add_argument("--version", action="version", version=AGENT_VERSION)
     parser.add_argument("--clear", action="store_true")
     parser.add_argument(
         "--code",

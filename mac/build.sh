@@ -36,6 +36,11 @@ PYI_ARGS=(
   --clean
   --noconfirm
   --paths ../common
+  --exclude-module pkg_resources
+  --exclude-module setuptools
+  --exclude-module _distutils_hack
+  --exclude-module distutils
+  --exclude-module jaraco
   --hidden-import api_config
   --hidden-import packaging
   --hidden-import packaging.version

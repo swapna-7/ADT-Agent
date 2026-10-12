@@ -29,6 +29,24 @@ from version import AGENT_VERSION  # noqa: E402
 def test_version_file_matches_module() -> None:
     file_ver = Path(__file__).resolve().parents[1].joinpath("VERSION").read_text(encoding="utf-8").strip()
     assert file_ver == AGENT_VERSION
+    assert AGENT_VERSION == "2.1.22"
+
+
+def test_windows_build_excludes_pkg_resources() -> None:
+    build = Path(__file__).resolve().parents[1].joinpath("windows", "build.ps1").read_text(encoding="utf-8")
+    for module in (
+        "pkg_resources",
+        "setuptools",
+        "_distutils_hack",
+        "distutils",
+        "jaraco",
+        "jaraco.text",
+        "jaraco.functools",
+        "more_itertools",
+    ):
+        assert f"'--exclude-module', '{module}'" in build
+    assert "'--collect-all', 'jaraco'" not in build
+    assert "pyi_rth_pkgres" in build
 
 
 def test_parse_semver_strips_v_and_pre_release() -> None:

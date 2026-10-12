@@ -1292,6 +1292,7 @@ def resolve_data_dir() -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Vizhi agent (Linux)")
+    parser.add_argument("--version", action="version", version=AGENT_VERSION)
     parser.add_argument("--clear", action="store_true", help="Clear stored credentials and exit")
     parser.add_argument(
         "--code",

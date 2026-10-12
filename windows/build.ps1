@@ -37,8 +37,8 @@ if (-not $python) {
 Write-Host "==> Installing build dependencies"
 & $python.Path -m pip install --upgrade pip | Out-Null
 & $python.Path -m pip install -r requirements.txt
-# setuptools 82+ makes pkg_resources import jaraco; a missing jaraco bricks the frozen exe at boot.
-& $python.Path -m pip install "setuptools>=70,<81"
+# Do not pin/bundle setuptools or jaraco. PyInstaller must exclude pkg_resources so
+# pyi_rth_pkgres.py is not injected (2.1.21 crashed at boot before any agent code).
 
 $pyinstaller = (Get-Command pyinstaller -ErrorAction SilentlyContinue)
 if (-not $pyinstaller) {
@@ -60,6 +60,7 @@ if (-not (Test-Path $apiConfig)) {
     throw "api_config.py missing after generate step"
 }
 
+$hooksDir = Join-Path $windowsDir 'hooks'
 $pyiArgs = @(
     '--onefile',
     '--name', 'adt-agent',
@@ -67,7 +68,17 @@ $pyiArgs = @(
     '--clean',
     '--noconfirm',
     '--paths', $commonDir,
+    '--additional-hooks-dir', $hooksDir,
+    '--exclude-module', 'pkg_resources',
+    '--exclude-module', 'setuptools',
+    '--exclude-module', '_distutils_hack',
+    '--exclude-module', 'distutils',
+    '--exclude-module', 'jaraco',
+    '--exclude-module', 'jaraco.text',
+    '--exclude-module', 'jaraco.functools',
+    '--exclude-module', 'more_itertools',
     '--hidden-import', 'api_config',
+    '--hidden-import', 'ed25519_verify_key',
     '--hidden-import', 'win32com',
     '--hidden-import', 'win32com.client',
     '--hidden-import', 'win32com.client.gencache',
@@ -93,9 +104,6 @@ $pyiArgs = @(
     '--hidden-import', 'inventory_windows',
     '--hidden-import', 'display_ipc',
     '--hidden-import', 'user_helper_task',
-    '--hidden-import', 'jaraco',
-    '--hidden-import', 'jaraco.text',
-    '--collect-all', 'jaraco',
     '--add-data', "$apiConfig;."
 )
 

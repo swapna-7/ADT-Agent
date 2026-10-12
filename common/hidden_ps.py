@@ -8,6 +8,8 @@ from typing import Any
 
 CREATE_NO_WINDOW = 0x08000000
 DETACHED_PROCESS = 0x00000008
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
 def _startupinfo() -> subprocess.STARTUPINFO | None:
@@ -57,11 +59,22 @@ run_hidden = run_hidden_process
 
 
 def popen_hidden(argv: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
-    """Start a background process without a visible console window."""
+    """Start a background process that outlives this process (no console window).
+
+    Task Scheduler jobs kill children on exit unless they break away from the job
+    object. CREATE_NO_WINDOW is ignored when combined with DETACHED_PROCESS, so
+    breakaway + a new process group is what restart_after_update needs.
+    """
     if sys.platform == "win32":
-        kwargs.setdefault("creationflags", CREATE_NO_WINDOW | DETACHED_PROCESS)
+        kwargs.setdefault(
+            "creationflags",
+            CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+        )
         kwargs.setdefault("startupinfo", _startupinfo())
         kwargs.setdefault("close_fds", True)
+        kwargs.setdefault("stdin", subprocess.DEVNULL)
+        kwargs.setdefault("stdout", subprocess.DEVNULL)
+        kwargs.setdefault("stderr", subprocess.DEVNULL)
     return subprocess.Popen(argv, **kwargs)
 
 
