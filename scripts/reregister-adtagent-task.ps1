@@ -1,5 +1,5 @@
-# Re-register ADTAgent scheduled task (dual trigger + IgnoreNew).
-# Run as Administrator on endpoints that still have the old AtStartup-only task.
+# Re-register ADTAgent as AtStartup-only (no 5-minute repetition).
+# Run as Administrator on endpoints that still have the 2.1.20–2.1.22 dual trigger.
 # Non-destructive — the agent keeps running.
 
 $ErrorActionPreference = 'Stop'
@@ -17,13 +17,7 @@ if (-not (Test-Path $agentPath)) {
 }
 
 $action = New-ScheduledTaskAction -Execute $agentPath
-
 $triggerStartup = New-ScheduledTaskTrigger -AtStartup
-$triggerRepeat = New-ScheduledTaskTrigger `
-    -RepetitionInterval (New-TimeSpan -Minutes 5) `
-    -Once `
-    -At (Get-Date)
-
 $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -RestartCount 999 `
@@ -31,7 +25,6 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -RunOnlyIfNetworkAvailable `
     -MultipleInstances IgnoreNew
-
 $principal = New-ScheduledTaskPrincipal `
     -UserId 'SYSTEM' `
     -LogonType ServiceAccount `
@@ -40,7 +33,7 @@ $principal = New-ScheduledTaskPrincipal `
 Register-ScheduledTask `
     -TaskName 'ADTAgent' `
     -Action $action `
-    -Trigger @($triggerStartup, $triggerRepeat) `
+    -Trigger $triggerStartup `
     -Settings $settings `
     -Principal $principal `
     -Force | Out-Null

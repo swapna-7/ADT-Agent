@@ -103,10 +103,6 @@ Set-Acl $installDir $acl
 
 $action = New-ScheduledTaskAction -Execute $installExe
 $triggerStartup = New-ScheduledTaskTrigger -AtStartup
-$triggerRepeat = New-ScheduledTaskTrigger `
-    -RepetitionInterval (New-TimeSpan -Minutes 5) `
-    -Once `
-    -At (Get-Date)
 $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -RestartCount 999 `
@@ -121,7 +117,7 @@ $principal = New-ScheduledTaskPrincipal `
 Register-ScheduledTask `
     -TaskName 'ADTAgent' `
     -Action $action `
-    -Trigger @($triggerStartup, $triggerRepeat) `
+    -Trigger $triggerStartup `
     -Settings $settings `
     -Principal $principal `
     -Force | Out-Null

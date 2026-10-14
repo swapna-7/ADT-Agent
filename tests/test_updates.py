@@ -5,13 +5,19 @@ Winget parsing is retired; Windows classification uses MsrcSeverity via WUA COM.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import sys
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from updates import (  # noqa: E402
     _msrc_to_class,
+    _wua_com_error_detail,
     apply_update,
+    apply_windows_update,
     detect_linux_distro,
     has_root,
 )
@@ -94,3 +100,47 @@ def test_detect_linux_distro_rhel(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 def test_has_root_is_callable() -> None:
     assert callable(has_root)
+
+
+def test_wua_com_error_includes_hresult() -> None:
+    exc = SimpleNamespace(args=(0x80240017,), hresult=0x80240017)
+    detail = _wua_com_error_detail(exc)  # type: ignore[arg-type]
+    assert "HRESULT=0x80240017" in detail
+
+
+def test_apply_windows_update_honors_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "win32com", MagicMock())
+    monkeypatch.setitem(sys.modules, "win32com.client", MagicMock())
+
+    def hang(*_args: object, **_kwargs: object) -> dict[str, object]:
+        time.sleep(2)
+        return {"ok": True}
+
+    monkeypatch.setattr("updates._apply_windows_update_com", hang)
+    result = apply_windows_update("11111111-1111-1111-1111-111111111111", timeout=0)
+    assert result["ok"] is False
+    assert result["error_code"] == "wua_timeout"
+    assert "timed out" in (result["error_message"] or "")
+
+
+def test_apply_windows_update_returns_worker_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "win32com", MagicMock())
+    monkeypatch.setitem(sys.modules, "win32com.client", MagicMock())
+
+    def instant(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "ok": True,
+            "exit_code": 0,
+            "stdout": "result_code=2",
+            "stderr": "",
+            "reboot_required": False,
+            "version_after": None,
+            "error_code": None,
+            "error_message": None,
+            "not_applicable": False,
+        }
+
+    monkeypatch.setattr("updates._apply_windows_update_com", instant)
+    result = apply_windows_update("11111111-1111-1111-1111-111111111111", timeout=5)
+    assert result["ok"] is True
+    assert result["stdout"] == "result_code=2"

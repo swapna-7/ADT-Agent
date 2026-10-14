@@ -1,6 +1,6 @@
 # ADT Agent
 
-Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.22).
+Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.23).
 
 ## Windows user-session display helper
 
@@ -11,6 +11,8 @@ The SYSTEM agent (`ADTAgent`) cannot show toasts or set wallpaper directly. A se
 - IPC files in `C:\ProgramData\ADT Agent\`: `pending_display.json`, `display_results.json`
 
 From **2.1.10**, `user_helper.ps1` lives in **`C:\ProgramData\ADT Agent\`** (readable by the logged-in user). The SYSTEM agent registers and starts `ADTAgentHelper` via `schtasks /Run`. Pre-2.1.10 endpoints need a one-time manual fix while logged in at the console (see below).
+
+**2.1.23** registers `ADTAgent` as AtStartup-only (no 5-minute repetition) and rewrites the live task on boot. Stale-process cleanup skips PIDs younger than 30 seconds. WUA install honors `timeout` on a worker thread and reports ResultCode/HRESULT through the existing jobs API.
 
 **2.1.22** excludes `pkg_resources` / `setuptools` / `jaraco` from the Windows freeze so PyInstaller does not inject `pyi_rth_pkgres.py` (2.1.21 crashed at boot before enroll or auto-update). Post-update `schtasks /Run` is started with `CREATE_BREAKAWAY_FROM_JOB` so the restart child outlives the old process.
 
@@ -34,17 +36,16 @@ From **2.1.10**, `user_helper.ps1` lives in **`C:\ProgramData\ADT Agent\`** (rea
 
 ### Re-register ADTAgent on existing Windows endpoints
 
-Endpoints deployed before 2.1.20 may still have an AtStartup-only task. Re-register without uninstalling (agent keeps running):
+2.1.20–2.1.22 registered a 5-minute repetition trigger that restarted a healthy process. 2.1.23 rewrites the task to AtStartup-only on boot. To do it manually without uninstalling:
 
 ```powershell
 # Or run: scripts/reregister-adtagent-task.ps1
 $agentPath = "C:\Program Files\ADT Agent\adt-agent.exe"
 $action = New-ScheduledTaskAction -Execute $agentPath
 $triggerStartup = New-ScheduledTaskTrigger -AtStartup
-$triggerRepeat = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 5) -Once -At (Get-Date)
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -RunOnlyIfNetworkAvailable -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-Register-ScheduledTask -TaskName "ADTAgent" -Action $action -Trigger @($triggerStartup, $triggerRepeat) -Settings $settings -Principal $principal -Force | Out-Null
+Register-ScheduledTask -TaskName "ADTAgent" -Action $action -Trigger $triggerStartup -Settings $settings -Principal $principal -Force | Out-Null
 ```
 
 ### Linux: upgrade systemd unit on existing installs
@@ -64,7 +65,7 @@ After upgrading agents on a machine, verify in Admin PowerShell:
 $install = "C:\Program Files\ADT Agent\adt-agent.exe"
 $staging = "C:\ProgramData\ADT Agent\update\adt-agent.exe"
 $backup  = "C:\Program Files\ADT Agent\adt-agent.old"
-$version = "2.1.22"   # GitHub release tag without v
+$version = "2.1.23"   # GitHub release tag without v
 
 Disable-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
 Disable-ScheduledTask -TaskName ADTAgentHelper -ErrorAction SilentlyContinue

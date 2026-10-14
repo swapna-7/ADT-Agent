@@ -227,31 +227,38 @@ def scan_windows_updates(timeout: int = DEFAULT_TIMEOUT) -> tuple[list[dict[str,
 scan_windows_update = scan_windows_updates
 
 
-def apply_windows_update(
-    update_uid: str,
-    timeout: int = 3600,
+def _wua_com_error_detail(exc: BaseException) -> str:
+    """Include ResultCode / HRESULT so hung or failed COM calls are diagnosable."""
+    parts = [str(exc)[:400]]
+    hresult = getattr(exc, "hresult", None)
+    if hresult is None and getattr(exc, "args", None):
+        first = exc.args[0]
+        if isinstance(first, int):
+            hresult = first
+    if hresult is not None:
+        try:
+            parts.append(f"HRESULT=0x{int(hresult) & 0xFFFFFFFF:08X}")
+        except (TypeError, ValueError):
+            parts.append(f"HRESULT={hresult}")
+    result_code = getattr(exc, "result_code", None)
+    if result_code is not None:
+        parts.append(f"ResultCode={result_code}")
+    return "; ".join(parts)[:500]
+
+
+def _apply_windows_update_com(
+    uid: str,
     on_progress: ProgressFn | None = None,
 ) -> ApplyResult:
-    """Download and install one WUA update by UpdateID GUID."""
-    del timeout
-    try:
-        import win32com.client  # type: ignore[import-untyped]
-    except ImportError as exc:
-        return _apply_ok(
-            exit_code=1,
-            error_code="pywin32_missing",
-            error_message=f"pywin32 unavailable: {exc}",
-        )
+    """Search / download / install one UpdateID. Must run on a CoInitialized thread."""
+    import pythoncom  # type: ignore[import-untyped]
+    import win32com.client  # type: ignore[import-untyped]
 
-    uid = (update_uid or "").strip()
-    if not uid:
-        return _apply_ok(exit_code=1, error_code="missing_uid", error_message="No UpdateID.")
-
+    pythoncom.CoInitialize()
     try:
         session = win32com.client.Dispatch("Microsoft.Update.Session")
         session.ClientApplicationID = "Vizhi-ADT-Agent"
         searcher = session.CreateUpdateSearcher()
-        # Prefer the exact UpdateID; fall back to a full pending search if the filter fails.
         try:
             result = searcher.Search(f"UpdateID='{uid}'")
         except Exception:
@@ -316,7 +323,65 @@ def apply_windows_update(
         )
     except Exception as exc:
         log.exception("WUA install failed for %s", uid)
-        return _apply_ok(exit_code=1, error_code="wua_exception", error_message=str(exc)[:500])
+        return _apply_ok(
+            exit_code=1,
+            error_code="wua_exception",
+            error_message=_wua_com_error_detail(exc),
+        )
+    finally:
+        pythoncom.CoUninitialize()
+
+
+def apply_windows_update(
+    update_uid: str,
+    timeout: int = 3600,
+    on_progress: ProgressFn | None = None,
+) -> ApplyResult:
+    """Download and install one WUA update by UpdateID GUID."""
+    try:
+        import win32com.client  # type: ignore[import-untyped]  # noqa: F401
+    except ImportError as exc:
+        return _apply_ok(
+            exit_code=1,
+            error_code="pywin32_missing",
+            error_message=f"pywin32 unavailable: {exc}",
+        )
+
+    uid = (update_uid or "").strip()
+    if not uid:
+        return _apply_ok(exit_code=1, error_code="missing_uid", error_message="No UpdateID.")
+
+    outcome: list[ApplyResult] = []
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            outcome.append(_apply_windows_update_com(uid, on_progress))
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker, name="wua-apply", daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        return _apply_ok(
+            exit_code=1,
+            error_code="wua_timeout",
+            error_message=f"Windows Update timed out after {timeout}s (UpdateID={uid}).",
+        )
+    if errors:
+        return _apply_ok(
+            exit_code=1,
+            error_code="wua_exception",
+            error_message=_wua_com_error_detail(errors[0]),
+        )
+    if outcome:
+        return outcome[0]
+    return _apply_ok(
+        exit_code=1,
+        error_code="wua_exception",
+        error_message="WUA worker returned no result.",
+    )
 
 
 # ---------------------------------------------------------------------------

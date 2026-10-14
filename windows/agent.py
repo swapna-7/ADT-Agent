@@ -154,12 +154,17 @@ def is_admin() -> bool:
         return False
 
 
+STALE_PROCESS_MIN_AGE_SECONDS = 30
+
+
 def cleanup_stale_agent_processes() -> None:
     """Terminate duplicate adt-agent.exe PIDs after a self-update swap (does not stop the task)."""
     self_pid = os.getpid()
     killed: list[int] = []
+    skipped_young: list[int] = []
+    now = time.time()
     try:
-        for proc in psutil.process_iter(["pid", "name", "exe"]):
+        for proc in psutil.process_iter(["pid", "name", "exe", "create_time"]):
             try:
                 if proc.info["pid"] == self_pid:
                     continue
@@ -168,13 +173,19 @@ def cleanup_stale_agent_processes() -> None:
                 if name == "adt-agent.exe" or (
                     exe and Path(exe).resolve() == INSTALL_EXE_PATH.resolve()
                 ):
+                    created = proc.info.get("create_time")
+                    if created is not None and (now - float(created)) < STALE_PROCESS_MIN_AGE_SECONDS:
+                        skipped_young.append(int(proc.info["pid"]))
+                        continue
                     proc.kill()
                     killed.append(int(proc.info["pid"]))
-            except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError):
+            except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError, ValueError):
                 continue
     except Exception as exc:
         logging.warning("Stale agent process cleanup failed: %s", exc)
         return
+    if skipped_young:
+        logging.info("Left recent agent process(es) running: %s", skipped_young)
     if killed:
         logging.info("Cleaned up stale agent process(es): %s", killed)
 
@@ -200,10 +211,9 @@ def register_scheduled_task() -> None:
 $ErrorActionPreference = 'Stop'
 $action = New-ScheduledTaskAction -Execute '{exe}'
 $triggerStartup = New-ScheduledTaskTrigger -AtStartup
-$triggerRepeat = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 5) -Once -At (Get-Date)
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -RunOnlyIfNetworkAvailable -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $action -Trigger @($triggerStartup, $triggerRepeat) -Settings $settings -Principal $principal -Force | Out-Null
+Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $action -Trigger $triggerStartup -Settings $settings -Principal $principal -Force | Out-Null
 """
     proc = run_hidden_powershell(script, timeout=60)
     if proc.returncode != 0:
@@ -1107,6 +1117,10 @@ def main() -> None:
     if is_frozen() and is_running_from_install_dir():
         cleanup_previous_backup(INSTALL_EXE_PATH)
         cleanup_stale_agent_processes()
+        try:
+            register_scheduled_task()
+        except Exception:
+            logging.exception("Scheduled task rewrite failed")
         try:
             ensure_helper_script_present()
             ensure_helper_task_registered(
