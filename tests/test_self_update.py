@@ -29,7 +29,7 @@ from version import AGENT_VERSION  # noqa: E402
 def test_version_file_matches_module() -> None:
     file_ver = Path(__file__).resolve().parents[1].joinpath("VERSION").read_text(encoding="utf-8").strip()
     assert file_ver == AGENT_VERSION
-    assert AGENT_VERSION == "2.1.23"
+    assert AGENT_VERSION == "2.1.24"
 
 
 def test_windows_build_excludes_pkg_resources() -> None:

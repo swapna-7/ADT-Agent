@@ -55,6 +55,29 @@ def test_enroll_only_exits_without_starting_pollers(
     patch_poller.assert_not_called()
 
 
+def test_parse_rejoins_designation_split_on_spaces() -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows agent enroll-only")
+    import agent  # noqa: E402
+
+    args = agent.parse_windows_agent_args(
+        [
+            "adt-agent",
+            "--enroll-only",
+            "--name",
+            "RCS005-LAPTOP",
+            "--person-name",
+            "testdev",
+            "--designation",
+            "Security",
+            "analyst",
+        ]
+    )
+    assert args.enroll_only is True
+    assert args.name == "RCS005-LAPTOP"
+    assert args.designation == "Security analyst"
+
+
 def test_enroll_only_already_enrolled_exits_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

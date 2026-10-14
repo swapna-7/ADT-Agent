@@ -975,7 +975,7 @@ def resolve_data_dir() -> Path:
     )
 
 
-def main() -> None:
+def _windows_agent_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Vizhi agent (Windows)")
     parser.add_argument("--version", action="version", version=AGENT_VERSION)
     parser.add_argument("--clear", action="store_true", help="Clear stored credentials and exit")
@@ -1009,7 +1009,118 @@ def main() -> None:
         action="store_true",
         help="Enroll from config.json and exit (used by Vizhi Agent Setup).",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def parse_windows_agent_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse CLI args. Rejoin values that Start-Process split on spaces."""
+    parser = _windows_agent_parser()
+    to_parse = argv
+    if to_parse is not None and to_parse and not str(to_parse[0]).startswith("-"):
+        to_parse = to_parse[1:]
+    args, unknown = parser.parse_known_args(to_parse)
+    extras = [token for token in unknown if not str(token).startswith("-")]
+    unknown_flags = [token for token in unknown if str(token).startswith("-")]
+    if unknown_flags:
+        parser.error("unrecognized arguments: " + " ".join(unknown))
+    if extras:
+        if args.designation:
+            args.designation = " ".join([args.designation, *extras]).strip()
+        elif args.person_name:
+            args.person_name = " ".join([args.person_name, *extras]).strip()
+        elif args.name:
+            args.name = " ".join([args.name, *extras]).strip()
+        else:
+            parser.error("unrecognized arguments: " + " ".join(extras))
+    # #region agent log
+    try:
+        _dbg = {
+            "sessionId": "c15c98",
+            "runId": "post-fix",
+            "hypothesisId": "A",
+            "location": "windows/agent.py:parse_windows_agent_args",
+            "message": "parsed argv after space-join",
+            "data": {
+                "argc": len(sys.argv if argv is None else argv),
+                "unknown_count": len(unknown),
+                "extras_count": len(extras),
+                "designation_word_count": len((args.designation or "").split()),
+                "parse_ok": True,
+            },
+            "timestamp": int(time.time() * 1000),
+        }
+        for _p in (
+            Path(r"c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log"),
+            Path(r"C:\ProgramData\ADT Agent\debug-c15c98.log"),
+            Path("debug-c15c98.log"),
+        ):
+            try:
+                _p.parent.mkdir(parents=True, exist_ok=True)
+                with _p.open("a", encoding="utf-8") as _fh:
+                    _fh.write(json.dumps(_dbg) + "\n")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # #endregion
+    return args
+
+
+def main() -> None:
+    # #region agent log
+    try:
+        _dbg_argv = [
+            "<exe>" if i == 0 else ("REDACTED" if (i > 0 and sys.argv[i - 1] in {"--code"}) else a)
+            for i, a in enumerate(sys.argv)
+        ]
+        _dbg = {
+            "sessionId": "c15c98",
+            "runId": "post-fix",
+            "hypothesisId": "A",
+            "location": "windows/agent.py:main",
+            "message": "argv before parse_args",
+            "data": {
+                "argc": len(sys.argv),
+                "argv": _dbg_argv,
+                "has_enroll_only": "--enroll-only" in sys.argv,
+            },
+            "timestamp": int(time.time() * 1000),
+        }
+        for _p in (
+            Path(r"c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log"),
+            Path(r"C:\ProgramData\ADT Agent\debug-c15c98.log"),
+            Path("debug-c15c98.log"),
+        ):
+            try:
+                _p.parent.mkdir(parents=True, exist_ok=True)
+                with _p.open("a", encoding="utf-8") as _fh:
+                    _fh.write(json.dumps(_dbg) + "\n")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # #endregion
+    try:
+        args = parse_windows_agent_args()
+    except SystemExit:
+        # #region agent log
+        try:
+            _fail = {
+                "sessionId": "c15c98",
+                "runId": "post-fix",
+                "hypothesisId": "A",
+                "location": "windows/agent.py:parse_args",
+                "message": "parse_args rejected argv",
+                "data": {"argc": len(sys.argv), "argv_flags": [a for a in sys.argv[1:] if a.startswith("-")]},
+                "timestamp": int(time.time() * 1000),
+            }
+            _lp = Path(r"c:\Users\swapn\OneDrive\Desktop\Rex Projects\Vizhi\debug-c15c98.log")
+            with _lp.open("a", encoding="utf-8") as _fh:
+                _fh.write(json.dumps(_fail) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        raise
 
     bootstrap = is_frozen() and not is_running_from_install_dir() and not args.enroll_only
     if bootstrap:

@@ -1,6 +1,6 @@
 # ADT Agent
 
-Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.23).
+Windows, Linux, and macOS endpoint agents. Shared code lives in [`common/`](common/). Current version is [`VERSION`](VERSION) / [`common/version.py`](common/version.py) (2.1.24).
 
 ## Windows user-session display helper
 
@@ -11,6 +11,8 @@ The SYSTEM agent (`ADTAgent`) cannot show toasts or set wallpaper directly. A se
 - IPC files in `C:\ProgramData\ADT Agent\`: `pending_display.json`, `display_results.json`
 
 From **2.1.10**, `user_helper.ps1` lives in **`C:\ProgramData\ADT Agent\`** (readable by the logged-in user). The SYSTEM agent registers and starts `ADTAgentHelper` via `schtasks /Run`. Pre-2.1.10 endpoints need a one-time manual fix while logged in at the console (see below).
+
+**2.1.24** rejoins designation/name values that Windows `Start-Process -ArgumentList` splits on spaces, so Vizhi Agent Setup enrolls titles like `Security analyst`.
 
 **2.1.23** registers `ADTAgent` as AtStartup-only (no 5-minute repetition) and rewrites the live task on boot. Stale-process cleanup skips PIDs younger than 30 seconds. WUA install honors `timeout` on a worker thread and reports ResultCode/HRESULT through the existing jobs API.
 
@@ -65,7 +67,7 @@ After upgrading agents on a machine, verify in Admin PowerShell:
 $install = "C:\Program Files\ADT Agent\adt-agent.exe"
 $staging = "C:\ProgramData\ADT Agent\update\adt-agent.exe"
 $backup  = "C:\Program Files\ADT Agent\adt-agent.old"
-$version = "2.1.23"   # GitHub release tag without v
+$version = "2.1.24"   # GitHub release tag without v
 
 Disable-ScheduledTask -TaskName ADTAgent -ErrorAction SilentlyContinue
 Disable-ScheduledTask -TaskName ADTAgentHelper -ErrorAction SilentlyContinue
